@@ -1,0 +1,25 @@
+[package]
+name = "zli"
+version = "0.1.0"
+edition = "2021"
+description = "ZLI — Command Line Chinese Trainer with spaced repetition"
+authors = []
+license = "GPL-3.0-only"
+
+[[bin]]
+name = "zli"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+dirs = "5"
+rand = "0.8"
+unicode-width = "0.1"
+arboard = "3"
+open = "5"
