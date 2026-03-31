@@ -100,8 +100,8 @@ The app creates its database on first launch and seeds all HSK 1–6 words autom
 
 | Platform | Path |
 |----------|------|
-| Linux    | `~/.local/share/hsk-cli/data.db` |
-| macOS    | `~/Library/Application Support/hsk-cli/data.db` |
+| Linux    | `~/.local/share/zhli/data.db` |
+| macOS    | `~/Library/Application Support/zhli/data.db` |
 
 ---
 
@@ -212,14 +212,14 @@ Words added to a custom deck can be studied by selecting that deck name at revie
 
 ```bash
 # Linux
-rm -rf ~/.local/share/hsk-cli
+rm -rf ~/.local/share/zhli
 
 # macOS
-rm -rf ~/Library/Application\ Support/hsk-cli
+rm -rf ~/Library/Application\ Support/zhli
 ```
 
 ---
 
 ## License
 
-MIT
+GNU General Public License v3.0 — see [LICENSE](LICENSE) for the full text.

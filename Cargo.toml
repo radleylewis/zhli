@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "ZLI — Command Line Chinese Trainer with spaced repetition"
 authors = []
+license = "GPL-3.0-only"
 
 [[bin]]
 name = "zli"

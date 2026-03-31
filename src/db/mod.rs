@@ -331,7 +331,7 @@ impl Database {
 
 fn db_path() -> Result<PathBuf> {
     let mut p = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
-    p.push("hsk-cli");
+    p.push("zhli");
     p.push("data.db");
     Ok(p)
 }
