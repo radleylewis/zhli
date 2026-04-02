@@ -2,6 +2,14 @@ use chrono::{Utc, Duration};
 use anyhow::Result;
 use crate::db::{CardRow, Database};
 
+// SM-2 scheduling parameters
+const INTERVAL_FIRST:    f64 = 1.0;  // days after first correct review
+const INTERVAL_SECOND:   f64 = 6.0;  // days after second correct review
+const INTERVAL_HARD:     f64 = 0.5;  // ~12 hours (grade 2: wrong but easy to recall)
+const INTERVAL_WRONG:    f64 = 0.1;  // ~2.5 hours (grade 1: incorrect)
+const INTERVAL_BLACKOUT: f64 = 0.04; // ~1 hour (grade 0: complete blank)
+const MIN_EASE_FACTOR:   f64 = 1.3;
+
 /// SM-2 quality grades (0-5)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewGrade {
@@ -78,8 +86,8 @@ pub fn sm2_schedule(card: &CardRow, grade: ReviewGrade) -> Sm2Result {
     if q >= 3 {
         // Correct response
         interval = match reps {
-            0 => 1.0,
-            1 => 6.0,
+            0 => INTERVAL_FIRST,
+            1 => INTERVAL_SECOND,
             _ => (interval * ef).max(1.0),
         };
         reps += 1;
@@ -87,15 +95,15 @@ pub fn sm2_schedule(card: &CardRow, grade: ReviewGrade) -> Sm2Result {
         // Incorrect — reset repetitions, review again soon
         reps = 0;
         interval = match q {
-            2 => 0.5,  // 12 hours
-            1 => 0.1,  // ~2.5 hours
-            _ => 0.04, // ~1 hour
+            2 => INTERVAL_HARD,
+            1 => INTERVAL_WRONG,
+            _ => INTERVAL_BLACKOUT,
         };
     }
 
     // Update ease factor
     ef += 0.1 - (5.0 - q as f64) * (0.08 + (5.0 - q as f64) * 0.02);
-    ef = ef.max(1.3);
+    ef = ef.max(MIN_EASE_FACTOR);
 
     let due = Utc::now() + Duration::seconds((interval * 86400.0) as i64);
     Sm2Result {
@@ -241,7 +249,7 @@ pub fn grade_answer(direction: &CardDirection, card: &CardRow, answer: &str) -> 
             let given = normalize_english(answer);
             // Accept /, comma, semicolon, and Chinese enumeration comma as separators
             let variants: Vec<String> = card.english
-                .split(|c| c == '/' || c == ',' || c == ';' || c == '、')
+                .split(['/', ',', ';', '、'])
                 .map(|v| normalize_english(v.trim()))
                 .filter(|v| !v.is_empty())
                 .collect();

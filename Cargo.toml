@@ -1,13 +1,13 @@
 [package]
-name = "zli"
+name = "zhli"
 version = "0.1.0"
 edition = "2021"
-description = "ZLI — Command Line Chinese Trainer with spaced repetition"
-authors = []
+description = "ZHLI — Command Line Chinese Trainer with spaced repetition"
+authors = ["Radley E. Sidwell-Lewis"]
 license = "GPL-3.0-only"
 
 [[bin]]
-name = "zli"
+name = "zhli"
 path = "src/main.rs"
 
 [dependencies]
@@ -23,3 +23,5 @@ rand = "0.8"
 unicode-width = "0.1"
 arboard = "3"
 open = "5"
+ureq = "2"
+scraper = "0.21"

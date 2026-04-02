@@ -1,5 +1,6 @@
 mod data;
 mod db;
+mod dict;
 mod srs;
 mod ui;
 
@@ -39,6 +40,29 @@ fn main() -> Result<()> {
             app.status_set_at = None;
         }
 
+        // Perform pending dictionary lookup after drawing "Searching..." first
+        if app.dict_searching {
+            app.dict_searching = false;
+            terminal.draw(|f| render(f, &app))?; // show "Searching..." before blocking
+            let searched_query = app.dict_query.clone();
+            match dict::lookup(&searched_query) {
+                Ok(results) => {
+                    app.dict_status = if results.is_empty() {
+                        "No results found.".to_string()
+                    } else {
+                        format!("{} result(s) — ↑↓ to scroll, Enter to add", results.len())
+                    };
+                    app.dict_cursor = 0;
+                    app.dict_last_query = searched_query;
+                    app.dict_results = results;
+                }
+                Err(e) => {
+                    app.dict_status = format!("Error: {}", e);
+                    app.dict_results.clear();
+                }
+            }
+        }
+
         terminal.draw(|f| render(f, &app))?;
 
         if event::poll(Duration::from_millis(50))? {
@@ -54,6 +78,6 @@ fn main() -> Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
 
-    println!("再见! (zàijiàn) — Goodbye!");
+    println!("再见!");
     Ok(())
 }
