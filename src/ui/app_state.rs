@@ -1,17 +1,41 @@
 use std::time::Instant;
+use std::sync::mpsc;
 use anyhow::Result;
 use crate::db::{CardRow, Database, Stats};
 use crate::srs::{CardDirection, ReviewGrade};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClearAction {
+    CustomWords,
+    Progress,
+    Deck(String),
+    Word(i64, String), // word_id, hanzi — delete a custom word
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Screen {
     MainMenu,
-    LevelSelect,
     ModeSelect,
+    ContentSelect,   // replaces LevelSelect + DeckSelect
+    AddCustomWord,
     Review,
     Stats,
     AddToDeck,
     SearchDeck,
+    About,
+    Confirm(ClearAction),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContentKind {
+    Hsk(u8),
+    Deck(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ContentItem {
+    pub kind: ContentKind,
+    pub selected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,9 +48,10 @@ pub struct App {
     pub screen: Screen,
     pub db: Database,
     // Settings
-    pub selected_level: u8,
     pub selected_directions: Vec<CardDirection>,
-    pub current_deck: Option<String>,
+    // Content selection (HSK levels + custom decks)
+    pub content_items: Vec<ContentItem>,
+    pub content_cursor: usize,
     // Review state
     pub review_queue: Vec<CardRow>,
     pub current_card_idx: usize,
@@ -41,32 +66,75 @@ pub struct App {
     pub stats_cache: Option<Stats>,
     // Menu cursors
     pub menu_cursor: usize,
-    pub level_cursor: u8,
     pub mode_cursor: usize,
-    pub start_review_after_mode: bool,
     pub grade_cursor: usize,
-    // Deck management
+    // Deck management (AddToDeck screen)
+    pub available_decks: Vec<String>,
+    pub deck_cursor: usize,
+    pub creating_new_deck: bool,
+    pub deck_preview: Vec<crate::db::WordRow>,
+    // Dictionary lookup (AddCustomWord screen)
+    pub dict_query: String,
+    pub dict_last_query: String,   // query that produced the current results
+    pub dict_results: Vec<crate::dict::DictEntry>,
+    pub dict_cursor: usize,
+    pub dict_status: String,
+    pub dict_rx: Option<mpsc::Receiver<Result<Vec<crate::dict::DictEntry>>>>,
+    // In-results filter (activated with '/')
+    pub dict_filter: String,
+    pub dict_filter_active: bool,
+    // Search deck screen
     pub search_query: String,
     pub search_results: Vec<crate::db::WordRow>,
     pub search_cursor: usize,
     pub deck_name_input: String,
     pub status_message: String,
     pub status_set_at: Option<Instant>,
+    // Vim-style command mode (`:q`, `:q!`, etc.)
+    pub cmd_buffer: Option<String>,
+    // Last character pressed — used for multi-key sequences (e.g. `gg`)
+    pub last_char: Option<char>,
+    // Clipboard — kept alive so content persists on X11/Wayland after set
+    pub clipboard: Option<arboard::Clipboard>,
+    // Stats screen scroll offset (indexes into level_stats list)
+    pub stats_scroll: usize,
 }
 
 impl App {
     pub fn new(db: Database) -> Self {
+        // Load persisted mode cursor
+        let mode_cursor = db.load_setting("mode_cursor").ok().flatten()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0)
+            .min(3);
+
+        // Restore selected directions from saved mode
+        let all_directions = [
+            CardDirection::ZhToPinyin,
+            CardDirection::ZhToEn,
+            CardDirection::EnToZh,
+            CardDirection::PinyinToZh,
+        ];
+        let selected_directions = vec![all_directions[mode_cursor].clone()];
+
+        // Load persisted selected levels (comma-separated, e.g. "1,2,3")
+        let saved_levels: Vec<u8> = db.load_setting("selected_levels").ok().flatten()
+            .map(|v| v.split(',').filter_map(|s| s.parse().ok()).collect())
+            .unwrap_or_else(|| (1u8..=6).collect());
+
+        let content_items = (1u8..=6)
+            .map(|l| ContentItem {
+                kind: ContentKind::Hsk(l),
+                selected: saved_levels.contains(&l),
+            })
+            .collect();
+
         Self {
             screen: Screen::MainMenu,
             db,
-            selected_level: 1,
-            selected_directions: vec![
-                CardDirection::ZhToPinyin,
-                CardDirection::ZhToEn,
-                CardDirection::EnToZh,
-                CardDirection::PinyinToZh,
-            ],
-            current_deck: None,
+            selected_directions,
+            content_items,
+            content_cursor: 0,
             review_queue: vec![],
             current_card_idx: 0,
             review_phase: ReviewPhase::Prompt,
@@ -78,25 +146,58 @@ impl App {
             session_total: 0,
             stats_cache: None,
             menu_cursor: 0,
-            level_cursor: 1,
-            mode_cursor: 0,
-            start_review_after_mode: false,
+            mode_cursor,
             grade_cursor: 1,
+            available_decks: vec![],
+            deck_cursor: 0,
+            creating_new_deck: false,
+            deck_preview: vec![],
+            dict_query: String::new(),
+            dict_last_query: String::new(),
+            dict_results: vec![],
+            dict_cursor: 0,
+            dict_status: String::new(),
+            dict_rx: None,
+            dict_filter: String::new(),
+            dict_filter_active: false,
             search_query: String::new(),
             search_results: vec![],
             search_cursor: 0,
             deck_name_input: String::new(),
             status_message: String::new(),
             status_set_at: None,
+            cmd_buffer: None,
+            last_char: None,
+            clipboard: arboard::Clipboard::new().ok(),
+            stats_scroll: 0,
         }
     }
 
+    pub fn save_study_settings(&self) {
+        let _ = self.db.save_setting("mode_cursor", &self.mode_cursor.to_string());
+        let levels: String = self.content_items.iter()
+            .filter(|i| i.selected)
+            .filter_map(|i| if let ContentKind::Hsk(l) = i.kind { Some(l.to_string()) } else { None })
+            .collect::<Vec<_>>()
+            .join(",");
+        let _ = self.db.save_setting("selected_levels", &levels);
+    }
+
     pub fn load_review_session(&mut self) -> Result<()> {
+        let selected_levels: Vec<u8> = self.content_items.iter()
+            .filter(|it| it.selected)
+            .filter_map(|it| if let ContentKind::Hsk(l) = it.kind { Some(l) } else { None })
+            .collect();
+        let selected_decks_owned: Vec<String> = self.content_items.iter()
+            .filter(|it| it.selected)
+            .filter_map(|it| if let ContentKind::Deck(d) = &it.kind { Some(d.clone()) } else { None })
+            .collect();
+        let selected_decks: Vec<&str> = selected_decks_owned.iter().map(|d| d.as_str()).collect();
         self.review_queue = self.db.due_cards(
-            self.selected_level,
+            &selected_levels,
+            &selected_decks,
             &self.selected_directions,
             50,
-            self.current_deck.as_deref(),
         )?;
         // Shuffle for variety
         use rand::seq::SliceRandom;
@@ -150,9 +251,27 @@ impl App {
         if let Some(card) = self.review_queue.get(self.current_card_idx).cloned() {
             crate::srs::apply_review(&self.db, &card, grade, elapsed)?;
             self.session_total += 1;
-            if self.last_score >= 0.5 { self.session_correct += 1; }
+            if grade as i32 >= 3 { self.session_correct += 1; }
         }
         self.advance_card();
+        Ok(())
+    }
+
+    pub fn load_decks(&mut self) -> Result<()> {
+        self.available_decks = self.db.list_decks()?;
+        self.deck_cursor = 0;
+        self.deck_preview.clear();
+        Ok(())
+    }
+
+    pub fn load_deck_preview(&mut self) -> Result<()> {
+        if self.deck_cursor > 0 {
+            if let Some(name) = self.available_decks.get(self.deck_cursor - 1) {
+                self.deck_preview = self.db.words_in_deck(name)?;
+                return Ok(());
+            }
+        }
+        self.deck_preview.clear();
         Ok(())
     }
 

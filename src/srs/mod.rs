@@ -2,6 +2,14 @@ use chrono::{Utc, Duration};
 use anyhow::Result;
 use crate::db::{CardRow, Database};
 
+// SM-2 scheduling parameters
+const INTERVAL_FIRST:    f64 = 1.0;  // days after first correct review
+const INTERVAL_SECOND:   f64 = 6.0;  // days after second correct review
+const INTERVAL_HARD:     f64 = 0.5;  // ~12 hours (grade 2: wrong but easy to recall)
+const INTERVAL_WRONG:    f64 = 0.1;  // ~2.5 hours (grade 1: incorrect)
+const INTERVAL_BLACKOUT: f64 = 0.04; // ~1 hour (grade 0: complete blank)
+const MIN_EASE_FACTOR:   f64 = 1.3;
+
 /// SM-2 quality grades (0-5)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewGrade {
@@ -37,7 +45,8 @@ impl CardDirection {
             "zh_to_pinyin" => Self::ZhToPinyin,
             "zh_to_en"     => Self::ZhToEn,
             "en_to_zh"     => Self::EnToZh,
-            _              => Self::PinyinToZh,
+            "pinyin_to_zh" => Self::PinyinToZh,
+            _              => Self::PinyinToZh, // should never occur; all values written via as_str()
         }
     }
 
@@ -78,8 +87,8 @@ pub fn sm2_schedule(card: &CardRow, grade: ReviewGrade) -> Sm2Result {
     if q >= 3 {
         // Correct response
         interval = match reps {
-            0 => 1.0,
-            1 => 6.0,
+            0 => INTERVAL_FIRST,
+            1 => INTERVAL_SECOND,
             _ => (interval * ef).max(1.0),
         };
         reps += 1;
@@ -87,15 +96,15 @@ pub fn sm2_schedule(card: &CardRow, grade: ReviewGrade) -> Sm2Result {
         // Incorrect — reset repetitions, review again soon
         reps = 0;
         interval = match q {
-            2 => 0.5,  // 12 hours
-            1 => 0.1,  // ~2.5 hours
-            _ => 0.04, // ~1 hour
+            2 => INTERVAL_HARD,
+            1 => INTERVAL_WRONG,
+            _ => INTERVAL_BLACKOUT,
         };
     }
 
     // Update ease factor
     ef += 0.1 - (5.0 - q as f64) * (0.08 + (5.0 - q as f64) * 0.02);
-    ef = ef.max(1.3);
+    ef = ef.max(MIN_EASE_FACTOR);
 
     let due = Utc::now() + Duration::seconds((interval * 86400.0) as i64);
     Sm2Result {
@@ -241,7 +250,7 @@ pub fn grade_answer(direction: &CardDirection, card: &CardRow, answer: &str) -> 
             let given = normalize_english(answer);
             // Accept /, comma, semicolon, and Chinese enumeration comma as separators
             let variants: Vec<String> = card.english
-                .split(|c| c == '/' || c == ',' || c == ';' || c == '、')
+                .split(['/', ',', ';', '、'])
                 .map(|v| normalize_english(v.trim()))
                 .filter(|v| !v.is_empty())
                 .collect();
@@ -273,4 +282,166 @@ pub fn apply_review(db: &Database, card: &CardRow, grade: ReviewGrade, time_ms: 
     db.update_card_srs(card.id, result.ease_factor, result.interval_days, result.repetitions, &result.due_at)?;
     db.record_review(card.id, grade as i32, time_ms)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(ef: f64, interval: f64, reps: i32) -> CardRow {
+        CardRow {
+            id: 1, word_id: 1, direction: "zh_to_en".into(),
+            ease_factor: ef, interval_days: interval, repetitions: reps,
+            hanzi: "你好".into(), pinyin: "nǐ hǎo".into(),
+            english: "hello".into(), level: 1,
+        }
+    }
+
+    // ── SM-2 ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn sm2_first_correct_gives_one_day() {
+        let r = sm2_schedule(&card(2.5, 0.0, 0), ReviewGrade::Good);
+        assert_eq!(r.interval_days, INTERVAL_FIRST);
+        assert_eq!(r.repetitions, 1);
+    }
+
+    #[test]
+    fn sm2_second_correct_gives_six_days() {
+        let r = sm2_schedule(&card(2.5, 1.0, 1), ReviewGrade::Good);
+        assert_eq!(r.interval_days, INTERVAL_SECOND);
+        assert_eq!(r.repetitions, 2);
+    }
+
+    #[test]
+    fn sm2_third_correct_multiplies_by_ef() {
+        let r = sm2_schedule(&card(2.5, 6.0, 2), ReviewGrade::Good);
+        assert!((r.interval_days - 15.0).abs() < 0.1);
+        assert_eq!(r.repetitions, 3);
+    }
+
+    #[test]
+    fn sm2_wrong_resets_reps_and_shortens_interval() {
+        let r = sm2_schedule(&card(2.5, 21.0, 5), ReviewGrade::Wrong);
+        assert_eq!(r.repetitions, 0);
+        assert_eq!(r.interval_days, INTERVAL_WRONG);
+    }
+
+    #[test]
+    fn sm2_ef_floor_is_enforced() {
+        // Repeated blackouts should not push EF below MIN_EASE_FACTOR
+        let mut c = card(1.4, 0.0, 0);
+        for _ in 0..20 {
+            let r = sm2_schedule(&c, ReviewGrade::Blackout);
+            assert!(r.ease_factor >= MIN_EASE_FACTOR, "EF dipped below floor: {}", r.ease_factor);
+            c.ease_factor = r.ease_factor;
+        }
+    }
+
+    #[test]
+    fn sm2_perfect_raises_ef() {
+        let r = sm2_schedule(&card(2.5, 1.0, 1), ReviewGrade::Perfect);
+        assert!(r.ease_factor > 2.5);
+    }
+
+    // ── Pinyin conversion ─────────────────────────────────────────────────────
+
+    #[test]
+    fn numbered_to_toned_basic() {
+        assert_eq!(numbered_to_toned("ni3 hao3"), "nǐ hǎo");
+        assert_eq!(numbered_to_toned("zhong1"), "zhōng");
+        assert_eq!(numbered_to_toned("ma1"), "mā");
+        assert_eq!(numbered_to_toned("ma2"), "má");
+        assert_eq!(numbered_to_toned("ma3"), "mǎ");
+        assert_eq!(numbered_to_toned("ma4"), "mà");
+    }
+
+    #[test]
+    fn numbered_to_toned_v_becomes_u_umlaut() {
+        assert_eq!(numbered_to_toned("lv4"), "lǜ");
+        assert_eq!(numbered_to_toned("nv3"), "nǚ");
+    }
+
+    #[test]
+    fn numbered_to_toned_neutral_tone() {
+        assert_eq!(numbered_to_toned("ma5"), "ma");
+    }
+
+    #[test]
+    fn strip_tones_removes_diacritics() {
+        assert_eq!(strip_tones("nǐ hǎo"), "ni hao");
+        assert_eq!(strip_tones("zhōng"), "zhong");
+    }
+
+    #[test]
+    fn normalize_pinyin_removes_spaces_and_tones() {
+        assert_eq!(normalize_pinyin("nǐ hǎo"), "nihao");
+        assert_eq!(normalize_pinyin("zhōng guó"), "zhongguo");
+    }
+
+    // ── Grading ───────────────────────────────────────────────────────────────
+
+    fn make_card(hanzi: &str, pinyin: &str, english: &str) -> CardRow {
+        CardRow {
+            id: 1, word_id: 1, direction: "zh_to_en".into(),
+            ease_factor: 2.5, interval_days: 1.0, repetitions: 1,
+            hanzi: hanzi.into(), pinyin: pinyin.into(), english: english.into(), level: 1,
+        }
+    }
+
+    #[test]
+    fn grade_zh_to_pinyin_exact() {
+        let c = make_card("你好", "nǐ hǎo", "hello");
+        let (score, _) = grade_answer(&CardDirection::ZhToPinyin, &c, "nǐ hǎo");
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
+    fn grade_zh_to_pinyin_numbered_accepted() {
+        let c = make_card("你好", "nǐ hǎo", "hello");
+        let (score, _) = grade_answer(&CardDirection::ZhToPinyin, &c, "ni3 hao3");
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
+    fn grade_zh_to_pinyin_wrong_tones_partial() {
+        let c = make_card("你好", "nǐ hǎo", "hello");
+        let (score, _) = grade_answer(&CardDirection::ZhToPinyin, &c, "ni hao");
+        assert_eq!(score, 0.6);
+    }
+
+    #[test]
+    fn grade_zh_to_en_exact() {
+        let c = make_card("你好", "nǐ hǎo", "hello");
+        let (score, _) = grade_answer(&CardDirection::ZhToEn, &c, "hello");
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
+    fn grade_zh_to_en_case_insensitive() {
+        let c = make_card("你好", "nǐ hǎo", "Hello");
+        let (score, _) = grade_answer(&CardDirection::ZhToEn, &c, "hello");
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
+    fn grade_zh_to_en_accepts_variant() {
+        let c = make_card("或者", "huò zhě", "or / either");
+        let (score, _) = grade_answer(&CardDirection::ZhToEn, &c, "either");
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
+    fn grade_en_to_zh_exact() {
+        let c = make_card("你好", "nǐ hǎo", "hello");
+        let (score, _) = grade_answer(&CardDirection::EnToZh, &c, "你好");
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
+    fn grade_en_to_zh_wrong() {
+        let c = make_card("你好", "nǐ hǎo", "hello");
+        let (score, _) = grade_answer(&CardDirection::EnToZh, &c, "再见");
+        assert_eq!(score, 0.0);
+    }
 }

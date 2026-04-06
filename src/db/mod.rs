@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, params, params_from_iter, types::Value};
 use std::path::PathBuf;
 use chrono::Utc;
 
@@ -44,17 +44,18 @@ impl Database {
                 repetitions   INTEGER NOT NULL DEFAULT 0,
                 due_at        TEXT NOT NULL,
                 last_grade    INTEGER,
-                created_at    TEXT NOT NULL
+                created_at    TEXT NOT NULL,
+                suspended     INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_word_dir
                 ON cards(word_id, direction);
 
             CREATE TABLE IF NOT EXISTS reviews (
-                id         INTEGER PRIMARY KEY,
-                card_id    INTEGER NOT NULL REFERENCES cards(id),
-                grade      INTEGER NOT NULL,
-                time_ms    INTEGER NOT NULL,
+                id          INTEGER PRIMARY KEY,
+                card_id     INTEGER NOT NULL REFERENCES cards(id),
+                grade       INTEGER NOT NULL,
+                time_ms     INTEGER NOT NULL,
                 reviewed_at TEXT NOT NULL
             );
 
@@ -90,8 +91,7 @@ impl Database {
         let word_ids: Vec<i64> = {
             let mut s = self.conn.prepare("SELECT id FROM words")?;
             let rows = s.query_map([], |r| r.get(0))?;
-            let ids = rows.filter_map(|r| r.ok()).collect();
-            ids
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
 
         let directions = ["zh_to_pinyin", "zh_to_en", "en_to_zh", "pinyin_to_zh"];
@@ -113,51 +113,69 @@ impl Database {
 
     pub fn due_cards(
         &self,
-        max_level: u8,
+        selected_levels: &[u8],
+        selected_decks: &[&str],
         directions: &[CardDirection],
         limit: usize,
-        custom_deck: Option<&str>,
     ) -> Result<Vec<CardRow>> {
-        let now = Utc::now().to_rfc3339();
-        let dir_list = directions.iter().map(|d| format!("'{}'", d.as_str())).collect::<Vec<_>>().join(",");
+        if selected_levels.is_empty() && selected_decks.is_empty() {
+            return Ok(vec![]);
+        }
 
-        let sql = if let Some(deck) = custom_deck {
-            format!(
-                "SELECT c.id, c.direction, c.ease_factor, c.interval_days,
-                        c.repetitions, w.hanzi, w.pinyin, w.english, w.level
-                 FROM cards c JOIN words w ON w.id = c.word_id
-                 WHERE w.level <= {max_level}
-                   AND c.direction IN ({dir_list})
-                   AND c.due_at <= '{now}'
-                   AND w.custom_deck = '{deck}'
-                 ORDER BY RANDOM() LIMIT {limit}"
-            )
-        } else {
-            format!(
-                "SELECT c.id, c.direction, c.ease_factor, c.interval_days,
-                        c.repetitions, w.hanzi, w.pinyin, w.english, w.level
-                 FROM cards c JOIN words w ON w.id = c.word_id
-                 WHERE w.level <= {max_level}
-                   AND c.direction IN ({dir_list})
-                   AND c.due_at <= '{now}'
-                 ORDER BY RANDOM() LIMIT {limit}"
-            )
-        };
+        let now = Utc::now().to_rfc3339();
+        let mut params: Vec<Value> = Vec::new();
+        let mut conditions: Vec<String> = Vec::new();
+
+        if !selected_levels.is_empty() {
+            let ph = placeholders(selected_levels.len());
+            for &l in selected_levels {
+                params.push(Value::Integer(i64::from(l)));
+            }
+            params.push(Value::Text(now));
+            // HSK words: apply SRS due-date filter; custom_deck IS NULL avoids counting deck words twice
+            conditions.push(format!(
+                "(w.level IN ({ph}) AND w.custom_deck IS NULL AND c.due_at <= ?)"
+            ));
+        }
+
+        for &deck in selected_decks {
+            // Deck = practice mode: no due-date filter, always available
+            conditions.push("(w.custom_deck = ?)".to_string());
+            params.push(Value::Text(deck.to_string()));
+        }
+
+        let dir_ph = placeholders(directions.len());
+        for d in directions {
+            params.push(Value::Text(d.as_str().to_string()));
+        }
+        params.push(Value::Integer(limit as i64));
+
+        let where_clause = conditions.join(" OR ");
+        let sql = format!(
+            "SELECT c.id, w.id, c.direction, c.ease_factor, c.interval_days,
+                    c.repetitions, w.hanzi, w.pinyin, w.english, w.level
+             FROM cards c JOIN words w ON w.id = c.word_id
+             WHERE ({where_clause})
+               AND c.direction IN ({dir_ph})
+               AND c.suspended = 0
+             ORDER BY RANDOM() LIMIT ?"
+        );
 
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map(params_from_iter(params), |r| {
             Ok(CardRow {
-                id: r.get(0)?,
-                direction: r.get(1)?,
-                ease_factor: r.get(2)?,
-                interval_days: r.get(3)?,
-                repetitions: r.get(4)?,
-                hanzi: r.get(5)?,
-                pinyin: r.get(6)?,
-                english: r.get(7)?,
-                level: r.get(8)?,
+                id:           r.get(0)?,
+                word_id:      r.get(1)?,
+                direction:    r.get(2)?,
+                ease_factor:  r.get(3)?,
+                interval_days: r.get(4)?,
+                repetitions:  r.get(5)?,
+                hanzi:        r.get(6)?,
+                pinyin:       r.get(7)?,
+                english:      r.get(8)?,
+                level:        r.get(9)?,
             })
-        })?.filter_map(|r| r.ok()).collect();
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
@@ -192,6 +210,111 @@ impl Database {
         Ok(())
     }
 
+    pub fn list_decks(&self) -> Result<Vec<String>> {
+        // Query custom_decks table so newly created empty decks appear immediately
+        let mut stmt = self.conn.prepare("SELECT name FROM custom_decks ORDER BY name")?;
+        let names = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(names)
+    }
+
+    pub fn create_deck(&self, name: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO custom_decks (name) VALUES (?1)",
+            params![name],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_deck(&self, name: &str) -> Result<()> {
+        self.conn.execute("UPDATE words SET custom_deck = NULL WHERE custom_deck = ?1", params![name])?;
+        self.conn.execute("DELETE FROM custom_decks WHERE name = ?1", params![name])?;
+        Ok(())
+    }
+
+    pub fn words_in_deck(&self, deck_name: &str) -> Result<Vec<WordRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, hanzi, pinyin, english, level, custom_deck FROM words
+             WHERE custom_deck = ?1 ORDER BY level, hanzi"
+        )?;
+        let rows = stmt.query_map(params![deck_name], |r| {
+            Ok(WordRow {
+                id: r.get(0)?, hanzi: r.get(1)?, pinyin: r.get(2)?,
+                english: r.get(3)?, level: r.get(4)?, custom_deck: r.get(5)?,
+            })
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn suspend_word(&self, word_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE cards SET suspended = 1 WHERE word_id = ?1",
+            params![word_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_word(&self, word_id: i64) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM reviews WHERE card_id IN (SELECT id FROM cards WHERE word_id = ?1)",
+            params![word_id],
+        )?;
+        self.conn.execute("DELETE FROM cards WHERE word_id = ?1", params![word_id])?;
+        self.conn.execute("DELETE FROM words WHERE id = ?1", params![word_id])?;
+        Ok(())
+    }
+
+    pub fn add_custom_word(&self, hanzi: &str, pinyin: &str, english: &str, level: u8, deck: Option<&str>) -> Result<()> {
+        // Duplicate check
+        let existing: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM words WHERE hanzi = ?1 AND pinyin = ?2",
+            params![hanzi, pinyin], |r| r.get(0),
+        )?;
+        if existing > 0 {
+            anyhow::bail!("'{}' ({}) is already in the dictionary", hanzi, pinyin);
+        }
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO words (hanzi, pinyin, english, level, custom_deck) VALUES (?1,?2,?3,?4,?5)",
+            params![hanzi, pinyin, english, level, deck],
+        )?;
+        let word_id = self.conn.last_insert_rowid();
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO cards (word_id, direction, ease_factor, interval_days, repetitions, due_at, created_at)
+             VALUES (?1, ?2, 2.5, 0, 0, ?3, ?3)"
+        )?;
+        for dir in &["zh_to_pinyin", "zh_to_en", "en_to_zh", "pinyin_to_zh"] {
+            stmt.execute(params![word_id, dir, now])?;
+        }
+        if let Some(deck_name) = deck {
+            self.conn.execute("INSERT OR IGNORE INTO custom_decks (name) VALUES (?1)", params![deck_name])?;
+        }
+        Ok(())
+    }
+
+    pub fn clear_custom_words(&self) -> Result<()> {
+        self.conn.execute_batch("
+            DELETE FROM reviews
+                WHERE card_id IN (
+                    SELECT id FROM cards
+                    WHERE word_id IN (SELECT id FROM words WHERE level = 0)
+                );
+            DELETE FROM cards WHERE word_id IN (SELECT id FROM words WHERE level = 0);
+            DELETE FROM words WHERE level = 0;
+            DELETE FROM custom_decks;
+        ")?;
+        Ok(())
+    }
+
+    pub fn reset_progress(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM reviews", [])?;
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE cards SET ease_factor=2.5, interval_days=0, repetitions=0, due_at=?1",
+            params![now],
+        )?;
+        Ok(())
+    }
+
     pub fn search_words(&self, query: &str) -> Result<Vec<WordRow>> {
         let pat = format!("%{}%", query);
         let mut stmt = self.conn.prepare(
@@ -208,7 +331,7 @@ impl Database {
                 level: r.get(4)?,
                 custom_deck: r.get(5)?,
             })
-        })?.filter_map(|r| r.ok()).collect();
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
@@ -245,29 +368,44 @@ impl Database {
         // Streak: count consecutive days with at least 1 review
         let streak = self.calculate_streak()?;
 
-        // Per-level breakdown
+        // Per-level breakdown: HSK levels grouped by level, custom words grouped by deck name
         let mut level_stmt = self.conn.prepare(
-            "SELECT w.level, COUNT(*),
+            "SELECT w.level, CAST(NULL AS TEXT),
+                    COUNT(*),
                     SUM(CASE WHEN c.interval_days>=21 THEN 1 ELSE 0 END),
                     SUM(CASE WHEN c.repetitions>0    THEN 1 ELSE 0 END)
              FROM cards c JOIN words w ON w.id=c.word_id
-             GROUP BY w.level ORDER BY w.level"
+             WHERE w.level > 0
+             GROUP BY w.level
+             UNION ALL
+             SELECT 0, COALESCE(w.custom_deck, '(no deck)'),
+                    COUNT(*),
+                    SUM(CASE WHEN c.interval_days>=21 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN c.repetitions>0    THEN 1 ELSE 0 END)
+             FROM cards c JOIN words w ON w.id=c.word_id
+             WHERE w.level = 0
+             GROUP BY w.custom_deck
+             ORDER BY 1, 2"
         )?;
         let level_stats: Vec<LevelStat> = level_stmt.query_map([], |r| {
             Ok(LevelStat {
                 level: r.get(0)?,
-                card_count: r.get(1)?,
-                mature: r.get(2)?,
-                reviewed: r.get(3)?,
+                deck_name: r.get(1)?,
+                card_count: r.get(2)?,
+                mature: r.get(3)?,
+                reviewed: r.get(4)?,
             })
-        })?.filter_map(|r| r.ok()).collect();
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
 
-        // Weakest words (lowest ease factor with at least 1 rep)
+        // Weakest words: group by word, take the lowest EF across all directions,
+        // only include words that have at least one review recorded.
+        // (repetitions resets to 0 on failure so cannot be used as the filter)
         let mut weak_stmt = self.conn.prepare(
-            "SELECT w.hanzi, w.pinyin, c.ease_factor
-             FROM cards c JOIN words w ON w.id=c.word_id
-             WHERE c.repetitions > 0
-             ORDER BY c.ease_factor ASC LIMIT 10"
+            "SELECT w.hanzi, w.pinyin, MIN(c.ease_factor) as ef
+             FROM cards c JOIN words w ON w.id = c.word_id
+             WHERE EXISTS (SELECT 1 FROM reviews r WHERE r.card_id = c.id)
+             GROUP BY w.id
+             ORDER BY ef ASC LIMIT 10"
         )?;
         let weakest: Vec<WeakCard> = weak_stmt.query_map([], |r| {
             Ok(WeakCard {
@@ -275,7 +413,7 @@ impl Database {
                 pinyin: r.get(1)?,
                 ease_factor: r.get(2)?,
             })
-        })?.filter_map(|r| r.ok()).collect();
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
 
         // Last 7 days review counts
         let mut daily_stmt = self.conn.prepare(
@@ -286,7 +424,7 @@ impl Database {
         )?;
         let daily_reviews: Vec<(String, i64)> = daily_stmt.query_map([], |r| {
             Ok((r.get(0)?, r.get(1)?))
-        })?.filter_map(|r| r.ok()).collect();
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
 
         Ok(Stats {
             total_reviews,
@@ -306,7 +444,7 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT substr(reviewed_at,1,10) as day FROM reviews ORDER BY day DESC"
         )?;
-        let days: Vec<String> = stmt.query_map([], |r| r.get(0))?.filter_map(|r| r.ok()).collect();
+        let days: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
 
         let today = Utc::now().format("%Y-%m-%d").to_string();
         let mut streak = 0i64;
@@ -327,6 +465,31 @@ impl Database {
         }
         Ok(streak)
     }
+
+    pub fn save_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_setting(&self, key: &str) -> Result<Option<String>> {
+        match self.conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |r| r.get(0),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+}
+
+fn placeholders(n: usize) -> String {
+    std::iter::repeat("?").take(n).collect::<Vec<_>>().join(",")
 }
 
 fn db_path() -> Result<PathBuf> {
@@ -341,6 +504,7 @@ fn db_path() -> Result<PathBuf> {
 #[derive(Debug, Clone)]
 pub struct CardRow {
     pub id: i64,
+    pub word_id: i64,
     pub direction: String,
     pub ease_factor: f64,
     pub interval_days: f64,
@@ -378,6 +542,7 @@ pub struct Stats {
 #[derive(Debug)]
 pub struct LevelStat {
     pub level: u8,
+    pub deck_name: Option<String>, // set for custom-deck rows (level = 0)
     pub card_count: i64,
     pub mature: i64,   // interval >= 21 days
     pub reviewed: i64, // repetitions > 0

@@ -1,11 +1,12 @@
 mod data;
 mod db;
+mod dict;
 mod srs;
 mod ui;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture},
+    event,
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -25,7 +26,7 @@ fn main() -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -37,6 +38,33 @@ fn main() -> Result<()> {
         if app.status_set_at.map(|t| t.elapsed().as_secs() >= 3).unwrap_or(false) {
             app.status_message.clear();
             app.status_set_at = None;
+        }
+
+        // Poll background dictionary lookup (non-blocking)
+        let dict_done = if let Some(rx) = &app.dict_rx {
+            rx.try_recv().ok()
+        } else {
+            None
+        };
+        if let Some(result) = dict_done {
+            app.dict_rx = None;
+            let searched_query = app.dict_query.clone();
+            match result {
+                Ok(results) => {
+                    app.dict_status = if results.is_empty() {
+                        "No results found.".to_string()
+                    } else {
+                        format!("{} result(s) — ↑↓ to scroll, Enter to add", results.len())
+                    };
+                    app.dict_cursor = 0;
+                    app.dict_last_query = searched_query;
+                    app.dict_results = results;
+                }
+                Err(e) => {
+                    app.dict_status = format!("Error: {e}");
+                    app.dict_results.clear();
+                }
+            }
         }
 
         terminal.draw(|f| render(f, &app))?;
@@ -51,9 +79,9 @@ fn main() -> Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    println!("再见! (zàijiàn) — Goodbye!");
+    println!("再见!");
     Ok(())
 }
