@@ -1,4 +1,5 @@
 use std::time::Instant;
+use std::sync::mpsc;
 use anyhow::Result;
 use crate::db::{CardRow, Database, Stats};
 use crate::srs::{CardDirection, ReviewGrade};
@@ -8,6 +9,7 @@ pub enum ClearAction {
     CustomWords,
     Progress,
     Deck(String),
+    Word(i64, String), // word_id, hanzi — delete a custom word
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,7 +79,7 @@ pub struct App {
     pub dict_results: Vec<crate::dict::DictEntry>,
     pub dict_cursor: usize,
     pub dict_status: String,
-    pub dict_searching: bool,
+    pub dict_rx: Option<mpsc::Receiver<Result<Vec<crate::dict::DictEntry>>>>,
     // In-results filter (activated with '/')
     pub dict_filter: String,
     pub dict_filter_active: bool,
@@ -92,23 +94,45 @@ pub struct App {
     pub cmd_buffer: Option<String>,
     // Last character pressed — used for multi-key sequences (e.g. `gg`)
     pub last_char: Option<char>,
+    // Clipboard — kept alive so content persists on X11/Wayland after set
+    pub clipboard: Option<arboard::Clipboard>,
+    // Stats screen scroll offset (indexes into level_stats list)
+    pub stats_scroll: usize,
 }
 
 impl App {
     pub fn new(db: Database) -> Self {
-        // Default content: all HSK levels selected, no decks yet (loaded when entering ContentSelect)
+        // Load persisted mode cursor
+        let mode_cursor = db.load_setting("mode_cursor").ok().flatten()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0)
+            .min(3);
+
+        // Restore selected directions from saved mode
+        let all_directions = [
+            CardDirection::ZhToPinyin,
+            CardDirection::ZhToEn,
+            CardDirection::EnToZh,
+            CardDirection::PinyinToZh,
+        ];
+        let selected_directions = vec![all_directions[mode_cursor].clone()];
+
+        // Load persisted selected levels (comma-separated, e.g. "1,2,3")
+        let saved_levels: Vec<u8> = db.load_setting("selected_levels").ok().flatten()
+            .map(|v| v.split(',').filter_map(|s| s.parse().ok()).collect())
+            .unwrap_or_else(|| (1u8..=6).collect());
+
         let content_items = (1u8..=6)
-            .map(|l| ContentItem { kind: ContentKind::Hsk(l), selected: true })
+            .map(|l| ContentItem {
+                kind: ContentKind::Hsk(l),
+                selected: saved_levels.contains(&l),
+            })
             .collect();
+
         Self {
             screen: Screen::MainMenu,
             db,
-            selected_directions: vec![
-                CardDirection::ZhToPinyin,
-                CardDirection::ZhToEn,
-                CardDirection::EnToZh,
-                CardDirection::PinyinToZh,
-            ],
+            selected_directions,
             content_items,
             content_cursor: 0,
             review_queue: vec![],
@@ -122,7 +146,7 @@ impl App {
             session_total: 0,
             stats_cache: None,
             menu_cursor: 0,
-            mode_cursor: 0,
+            mode_cursor,
             grade_cursor: 1,
             available_decks: vec![],
             deck_cursor: 0,
@@ -133,7 +157,7 @@ impl App {
             dict_results: vec![],
             dict_cursor: 0,
             dict_status: String::new(),
-            dict_searching: false,
+            dict_rx: None,
             dict_filter: String::new(),
             dict_filter_active: false,
             search_query: String::new(),
@@ -144,7 +168,19 @@ impl App {
             status_set_at: None,
             cmd_buffer: None,
             last_char: None,
+            clipboard: arboard::Clipboard::new().ok(),
+            stats_scroll: 0,
         }
+    }
+
+    pub fn save_study_settings(&self) {
+        let _ = self.db.save_setting("mode_cursor", &self.mode_cursor.to_string());
+        let levels: String = self.content_items.iter()
+            .filter(|i| i.selected)
+            .filter_map(|i| if let ContentKind::Hsk(l) = i.kind { Some(l.to_string()) } else { None })
+            .collect::<Vec<_>>()
+            .join(",");
+        let _ = self.db.save_setting("selected_levels", &levels);
     }
 
     pub fn load_review_session(&mut self) -> Result<()> {

@@ -586,10 +586,15 @@ pub fn render_stats(f: &mut Frame, app: &App, area: Rect) {
             .border_style(Style::default().fg(BLUE))
             .title(" Level Breakdown ")
             .title_bottom(Line::from(Span::styled(
-                " seen = reviewed once  learned = scheduled 21+ days ",
+                " seen = reviewed once  learned = scheduled 21+ days  ↑↓ scroll ",
                 Style::default().fg(GRAY),
             ))));
-    f.render_widget(level_list, left_chunks[1]);
+    let mut level_state = ListState::default();
+    if !stats.level_stats.is_empty() {
+        let clamped = app.stats_scroll.min(stats.level_stats.len() - 1);
+        level_state.select(Some(clamped));
+    }
+    f.render_stateful_widget(level_list, left_chunks[1], &mut level_state);
 
     // Right column: weakest words + EF legend + daily activity
     let right_chunks = Layout::default()
@@ -668,12 +673,14 @@ fn render_content_select(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     let selected_count = app.content_items.iter().filter(|i| i.selected).count();
+    let (count_text, count_color) = if selected_count == 0 {
+        ("  —  nothing selected — press Space or 'a'".to_string(), WARN)
+    } else {
+        (format!("  —  {} item(s) selected", selected_count), GRAY)
+    };
     let title = Paragraph::new(Line::from(vec![
         Span::styled("Select Content", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-        Span::styled(
-            format!("  —  {} item(s) selected", selected_count),
-            Style::default().fg(GRAY),
-        ),
+        Span::styled(count_text, Style::default().fg(count_color)),
     ])).alignment(Alignment::Center);
     f.render_widget(title, chunks[0]);
 
@@ -718,7 +725,7 @@ fn render_content_select(f: &mut Frame, app: &App, area: Rect) {
             .title(" Content "));
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 
-    let footer = Paragraph::new("↑↓/jk Navigate  •  Space Toggle  •  a All  •  n None  •  Enter Start  •  Esc Back")
+    let footer = Paragraph::new("↑↓/jk Navigate  •  Space Toggle  •  a Select all  •  n Deselect all  •  Enter Start  •  Esc Back")
         .style(Style::default().fg(GRAY))
         .alignment(Alignment::Center);
     f.render_widget(footer, chunks[2]);
@@ -851,12 +858,18 @@ fn render_confirm(f: &mut Frame, action: &ClearAction, area: Rect) {
             format!("Delete deck \"{}\"?", name),
             "Words in this deck will lose their deck assignment.".to_string(),
         ),
+        ClearAction::Word(_, hanzi) => (
+            " 🗑️  Delete Word ".to_string(),
+            format!("Delete \"{}\" and all its review history?", hanzi),
+            "This cannot be undone.".to_string(),
+        ),
     };
 
     let border_color = match action {
         ClearAction::CustomWords => WARN,
         ClearAction::Progress    => RED,
         ClearAction::Deck(_)     => WARN,
+        ClearAction::Word(..)    => RED,
     };
 
     let block = Block::default()
@@ -998,14 +1011,20 @@ fn render_search_deck(f: &mut Frame, app: &App, area: Rect) {
         } else {
             Style::default().fg(WHITE)
         };
-        let deck_tag = w.custom_deck.as_deref().map(|d| format!(" [{}]", d)).unwrap_or_default();
+        let target_deck = if app.deck_name_input.is_empty() { "My Deck" } else { &app.deck_name_input };
+        let in_target = w.custom_deck.as_deref() == Some(target_deck);
+        let deck_tag = if in_target {
+            " ✓".to_string()
+        } else {
+            w.custom_deck.as_deref().map(|d| format!(" [{}]", d)).unwrap_or_default()
+        };
         let prefix = if selected { "▶ " } else { "  " };
-        ListItem::new(Line::from(Span::styled(
-            format!("{}{}  {}  {}  {}{}", prefix, w.hanzi, w.pinyin, w.english,
-                if w.level == 0 { "Other".to_string() } else { format!("HSK{}", w.level) },
-                deck_tag),
-            style,
-        )))
+        let tag_style = if in_target { Style::default().fg(GREEN) } else { style };
+        let level_str = if w.level == 0 { "Other".to_string() } else { format!("HSK{}", w.level) };
+        ListItem::new(Line::from(vec![
+            Span::styled(format!("{}{}  {}  {}  {}", prefix, w.hanzi, w.pinyin, w.english, level_str), style),
+            Span::styled(deck_tag, tag_style),
+        ]))
     }).collect();
 
     // "＋ Add custom word" entry at the bottom
@@ -1037,7 +1056,7 @@ fn render_search_deck(f: &mut Frame, app: &App, area: Rect) {
 
     let deck_name = if app.deck_name_input.is_empty() { "My Deck" } else { &app.deck_name_input };
     let footer = Paragraph::new(format!(
-        "Type to search  •  ↑↓ Navigate  •  Enter Add to \"{}\"  •  Esc Back",
+        "Type to search  •  ↑↓ Navigate  •  Enter Add to \"{}\"  •  D Delete  •  Esc Back",
         deck_name,
     ))
     .style(Style::default().fg(GRAY))

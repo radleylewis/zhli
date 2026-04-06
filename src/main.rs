@@ -6,7 +6,7 @@ mod ui;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture},
+    event,
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -26,7 +26,7 @@ fn main() -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -40,12 +40,16 @@ fn main() -> Result<()> {
             app.status_set_at = None;
         }
 
-        // Perform pending dictionary lookup after drawing "Searching..." first
-        if app.dict_searching {
-            app.dict_searching = false;
-            terminal.draw(|f| render(f, &app))?; // show "Searching..." before blocking
+        // Poll background dictionary lookup (non-blocking)
+        let dict_done = if let Some(rx) = &app.dict_rx {
+            rx.try_recv().ok()
+        } else {
+            None
+        };
+        if let Some(result) = dict_done {
+            app.dict_rx = None;
             let searched_query = app.dict_query.clone();
-            match dict::lookup(&searched_query) {
+            match result {
                 Ok(results) => {
                     app.dict_status = if results.is_empty() {
                         "No results found.".to_string()
@@ -57,7 +61,7 @@ fn main() -> Result<()> {
                     app.dict_results = results;
                 }
                 Err(e) => {
-                    app.dict_status = format!("Error: {}", e);
+                    app.dict_status = format!("Error: {e}");
                     app.dict_results.clear();
                 }
             }
@@ -75,7 +79,7 @@ fn main() -> Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     println!("再见!");

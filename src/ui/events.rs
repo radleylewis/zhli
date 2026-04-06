@@ -1,10 +1,19 @@
 use anyhow::Result;
-use arboard::Clipboard;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;
+use std::sync::mpsc;
 
 use crate::ui::app_state::{App, ClearAction, ContentItem, ContentKind, ReviewPhase, Screen};
 use crate::srs::{CardDirection, ReviewGrade};
+
+fn spawn_dict_lookup(app: &mut App) {
+    let (tx, rx) = mpsc::channel();
+    app.dict_rx = Some(rx);
+    let query = app.dict_query.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(crate::dict::lookup(&query));
+    });
+}
 
 /// Returns true if the app should quit
 pub fn handle_event(app: &mut App, event: Event) -> Result<bool> {
@@ -29,6 +38,7 @@ pub fn handle_event(app: &mut App, event: Event) -> Result<bool> {
         return Ok(false);
     }
 
+    let prev_screen = app.screen.clone();
     let quit = match app.screen.clone() {
         Screen::MainMenu        => handle_main_menu(app, code),
         Screen::ModeSelect      => { handle_mode_select(app, code); false }
@@ -42,15 +52,20 @@ pub fn handle_event(app: &mut App, event: Event) -> Result<bool> {
         Screen::Confirm(action) => { handle_confirm(app, code, action)?; false }
     };
 
-    // Track last character for multi-key sequences (gg, etc.)
-    // Clear when in text-input screens so stale state doesn't bleed through
-    app.last_char = if in_text_input {
-        None
-    } else if let KeyCode::Char(c) = code {
-        Some(c)
+    // Clear multi-key state on screen transitions so stale 'g' doesn't bleed through
+    if app.screen != prev_screen {
+        app.last_char = None;
     } else {
-        None
-    };
+        // Track last character for multi-key sequences (gg, etc.)
+        // Clear when in text-input screens so stale state doesn't bleed through
+        app.last_char = if in_text_input {
+            None
+        } else if let KeyCode::Char(c) = code {
+            Some(c)
+        } else {
+            None
+        };
+    }
 
     Ok(quit)
 }
@@ -120,11 +135,17 @@ fn handle_main_menu(app: &mut App, code: KeyCode) -> bool {
             match app.menu_cursor {
                 0 => { app.screen = Screen::ModeSelect; }
                 1 => {
-                    let _ = app.refresh_stats();
+                    if let Err(e) = app.refresh_stats() {
+                        app.status_message = format!("Failed to load stats: {e}");
+                        app.status_set_at = Some(Instant::now());
+                    }
                     app.screen = Screen::Stats;
                 }
                 2 => {
-                    let _ = app.load_decks();
+                    if let Err(e) = app.load_decks() {
+                        app.status_message = format!("Failed to load decks: {e}");
+                        app.status_set_at = Some(Instant::now());
+                    }
                     app.deck_name_input.clear();
                     app.creating_new_deck = false;
                     app.screen = Screen::AddToDeck;
@@ -190,6 +211,7 @@ fn handle_mode_select(app: &mut App, code: KeyCode) {
                 }))
                 .collect();
             app.content_cursor = 0;
+            app.save_study_settings();
             app.screen = Screen::ContentSelect;
         }
         KeyCode::Esc => { app.screen = Screen::MainMenu; }
@@ -261,14 +283,42 @@ fn handle_review(app: &mut App, code: KeyCode) -> Result<()> {
                     app.apply_grade(grade)?;
                 }
                 // Yank hanzi to clipboard
+                // The Clipboard object is kept alive in app.clipboard so content persists on X11
                 KeyCode::Char('y') => {
                     if let Some(card) = app.review_queue.get(app.current_card_idx) {
-                        match Clipboard::new().and_then(|mut cb| cb.set_text(card.hanzi.clone())) {
-                            Ok(()) => {
-                                app.status_message = format!("Copied \"{}\" to clipboard", card.hanzi);
+                        let hanzi = card.hanzi.clone();
+                        let ok = if let Some(ref mut cb) = app.clipboard {
+                            cb.set_text(hanzi.clone()).is_ok()
+                        } else {
+                            match arboard::Clipboard::new() {
+                                Ok(mut cb) => {
+                                    let ok = cb.set_text(hanzi.clone()).is_ok();
+                                    app.clipboard = Some(cb);
+                                    ok
+                                }
+                                Err(_) => false,
                             }
-                            Err(_) => {
-                                app.status_message = "Failed to access clipboard".to_string();
+                        };
+                        app.status_message = if ok {
+                            format!("Copied \"{}\" to clipboard", hanzi)
+                        } else {
+                            "Failed to access clipboard".to_string()
+                        };
+                        app.status_set_at = Some(Instant::now());
+                    }
+                }
+                // Suspend word — removes it from future review queues
+                KeyCode::Char('s') => {
+                    if let Some(card) = app.review_queue.get(app.current_card_idx) {
+                        let word_id = card.word_id;
+                        let hanzi   = card.hanzi.clone();
+                        match app.db.suspend_word(word_id) {
+                            Ok(()) => {
+                                app.status_message = format!("Suspended '{}'", hanzi);
+                                app.advance_card();
+                            }
+                            Err(e) => {
+                                app.status_message = format!("Error suspending: {}", e);
                             }
                         }
                         app.status_set_at = Some(Instant::now());
@@ -277,9 +327,13 @@ fn handle_review(app: &mut App, code: KeyCode) -> Result<()> {
                 // Open in MDBG online dictionary
                 KeyCode::Char('i') => {
                     if let Some(card) = app.review_queue.get(app.current_card_idx) {
+                        let encoded: String = card.hanzi.bytes().map(|b| match b {
+                            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+                            | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+                            b => format!("%{b:02X}"),
+                        }).collect();
                         let url = format!(
-                            "https://www.mdbg.net/chinese/dictionary?page=worddict&wdrst=0&wdqb={}",
-                            card.hanzi
+                            "https://www.mdbg.net/chinese/dictionary?page=worddict&wdrst=0&wdqb={encoded}"
                         );
                         match open::that(&url) {
                             Ok(()) => {
@@ -308,7 +362,17 @@ fn handle_stats(app: &mut App, code: KeyCode) {
             app.screen = Screen::MainMenu;
         }
         KeyCode::Char('r') => {
-            let _ = app.refresh_stats();
+            if let Err(e) = app.refresh_stats() {
+                app.status_message = format!("Failed to refresh stats: {e}");
+                app.status_set_at = Some(Instant::now());
+            }
+            app.stats_scroll = 0;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.stats_scroll = app.stats_scroll.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.stats_scroll += 1;
         }
         _ => {}
     }
@@ -334,7 +398,7 @@ fn handle_add_to_deck(app: &mut App, code: KeyCode) -> Result<()> {
                     app.screen = Screen::SearchDeck;
                 }
             }
-            KeyCode::Char(c) => { app.deck_name_input.push(c); }
+            KeyCode::Char(c) => { if app.deck_name_input.len() < 64 { app.deck_name_input.push(c); } }
             _ => {}
         }
     } else {
@@ -346,19 +410,19 @@ fn handle_add_to_deck(app: &mut App, code: KeyCode) -> Result<()> {
             KeyCode::Up | KeyCode::Char('k') => {
                 if app.deck_cursor > 0 {
                     app.deck_cursor -= 1;
-                    let _ = app.load_deck_preview();
+                    app.load_deck_preview()?;
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if app.deck_cursor + 1 < total {
                     app.deck_cursor += 1;
-                    let _ = app.load_deck_preview();
+                    app.load_deck_preview()?;
                 }
             }
             KeyCode::Char('g') => {
                 if app.last_char == Some('g') {
                     app.deck_cursor = 0;
-                    let _ = app.load_deck_preview();
+                    app.load_deck_preview()?;
                 }
             }
             KeyCode::Char('G') => {
@@ -416,7 +480,7 @@ fn handle_search_deck(app: &mut App, code: KeyCode) -> Result<()> {
                 } else {
                     "Press Enter to search online.".to_string()
                 };
-                app.dict_searching = false;
+                app.dict_rx = None;
                 app.screen = Screen::AddCustomWord;
             }
         }
@@ -427,10 +491,10 @@ fn handle_search_deck(app: &mut App, code: KeyCode) -> Result<()> {
             app.dict_cursor = 0;
             if app.dict_query.is_empty() {
                 app.dict_status = "Type a word and press Enter to search online.".to_string();
-                app.dict_searching = false;
+                app.dict_rx = None;
             } else {
                 app.dict_status = "Searching...".to_string();
-                app.dict_searching = true;
+                spawn_dict_lookup(app);
             }
             app.screen = Screen::AddCustomWord;
         }
@@ -444,7 +508,14 @@ fn handle_search_deck(app: &mut App, code: KeyCode) -> Result<()> {
                 app.do_search()?;
             }
         }
-        // j/k are valid search characters — do NOT intercept them for navigation
+        KeyCode::Char('D') | KeyCode::Delete => {
+            if app.search_cursor < app.search_results.len() {
+                if let Some(word) = app.search_results.get(app.search_cursor) {
+                    app.screen = Screen::Confirm(ClearAction::Word(word.id, word.hanzi.clone()));
+                }
+            }
+        }
+        // j/k/d and other chars are valid search input — do NOT intercept them
         KeyCode::Char(c) => {
             app.search_query.push(c);
             app.search_cursor = 0;
@@ -556,9 +627,8 @@ fn handle_add_custom_word(app: &mut App, code: KeyCode) -> Result<()> {
                     app.screen = Screen::SearchDeck;
                 }
             } else if !app.dict_query.is_empty() {
-                // Trigger lookup (main loop will execute it after drawing "Searching...")
                 app.dict_status = "Searching...".to_string();
-                app.dict_searching = true;
+                spawn_dict_lookup(app);
             }
         }
         KeyCode::Char(c) => {
@@ -596,17 +666,25 @@ fn handle_content_select(app: &mut App, code: KeyCode) -> Result<()> {
             if let Some(item) = app.content_items.get_mut(app.content_cursor) {
                 item.selected = !item.selected;
             }
+            app.save_study_settings();
         }
         KeyCode::Char('a') => {
             for item in &mut app.content_items { item.selected = true; }
+            app.save_study_settings();
         }
         KeyCode::Char('n') => {
             for item in &mut app.content_items { item.selected = false; }
+            app.save_study_settings();
         }
         KeyCode::Enter => {
             if app.content_items.iter().any(|i| i.selected) {
-                let _ = app.load_review_session();
-                app.screen = Screen::Review;
+                app.load_review_session()?;
+                if app.review_queue.is_empty() {
+                    app.status_message = "No cards due — all caught up!".to_string();
+                    app.status_set_at = Some(Instant::now());
+                } else {
+                    app.screen = Screen::Review;
+                }
             }
         }
         KeyCode::Esc => { app.screen = Screen::ModeSelect; }
@@ -645,13 +723,20 @@ fn handle_confirm(app: &mut App, code: KeyCode, action: ClearAction) -> Result<(
                     app.deck_cursor = 0;
                     app.screen = Screen::AddToDeck;
                 }
+                ClearAction::Word(word_id, hanzi) => {
+                    app.db.delete_word(word_id)?;
+                    app.status_message = format!("Deleted '{}'.", hanzi);
+                    app.do_search()?;
+                    app.screen = Screen::SearchDeck;
+                }
             }
             app.status_set_at = Some(Instant::now());
         }
         _ => {
             // cancelled — return to wherever made sense
             match action {
-                ClearAction::Deck(_) => { app.screen = Screen::AddToDeck; }
+                ClearAction::Deck(_)   => { app.screen = Screen::AddToDeck; }
+                ClearAction::Word(..)  => { app.screen = Screen::SearchDeck; }
                 _ => { app.screen = Screen::MainMenu; }
             }
         }

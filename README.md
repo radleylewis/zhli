@@ -1,27 +1,29 @@
-# 中 ZLI — Command Line Chinese Trainer
+# 中 ZHLI — Command Line Chinese Trainer
 
 **Version 0.1.0**
 
-A terminal-based flashcard app for learning HSK 1–6 Chinese vocabulary using the SM-2 spaced repetition algorithm. All data is stored locally in SQLite — no account, no internet required.
+A terminal-based flashcard app for learning HSK 1–6 Chinese vocabulary using the SM-2 spaced repetition algorithm. All data is stored locally in SQLite — no account, no internet required for core study.
 
 ---
 
 ## Features
 
-- HSK levels 1–6 (2 500+ vocabulary cards)
+- HSK levels 1–6 (~5 000 vocabulary cards)
 - Four study directions: Chinese→Pinyin, Chinese→English, English→Chinese, Pinyin→Chinese
-- SM-2 spaced repetition scheduling
-- Numbered pinyin input (`hao3` → `hǎo`)
-- Custom word decks
-- Stats dashboard with streak, review history, and weakest-word tracking
+- SM-2 spaced repetition scheduling with per-card ease factor
+- Numbered pinyin input (`hao3` → `hǎo`) with partial-credit tone grading
+- Custom word decks with online MDBG dictionary lookup
+- Stats dashboard: streak, retention, per-level progress, weakest words, 7-day activity
+- Vim-style navigation (`j`/`k`, `gg`/`G`, `:q`, `:q!`)
 - Clipboard yank and browser dictionary lookup during review
+- Study mode and content selection persisted across sessions
 
 ---
 
 ## Requirements
 
-- [Rust](https://www.rust-lang.org/tools/install) 1.70 or later (install via `rustup` — recommended on all platforms)
-- A terminal with 256-colour support (most modern terminals qualify)
+- [Rust](https://www.rust-lang.org/tools/install) 1.70 or later (install via `rustup` — recommended)
+- A terminal with 256-colour support
 - **Linux only:** clipboard support requires a clipboard utility at runtime (see below)
 
 ---
@@ -43,8 +45,8 @@ sudo pacman -S wl-clipboard   # Wayland
 sudo pacman -S libxcb
 
 # Clone and build
-git clone https://github.com/your-username/chinese-line-interface.git
-cd chinese-line-interface
+git clone https://github.com/your-username/zhli.git
+cd zhli
 cargo build --release
 ```
 
@@ -62,8 +64,8 @@ sudo apt install xclip libxcb1-dev libxcb-render0-dev \
 # sudo apt install wl-clipboard
 
 # Clone and build
-git clone https://github.com/your-username/chinese-line-interface.git
-cd chinese-line-interface
+git clone https://github.com/your-username/zhli.git
+cd zhli
 cargo build --release
 ```
 
@@ -77,8 +79,8 @@ source "$HOME/.cargo/env"
 # No extra clipboard dependencies — macOS provides native clipboard access
 
 # Clone and build
-git clone https://github.com/your-username/chinese-line-interface.git
-cd chinese-line-interface
+git clone https://github.com/your-username/zhli.git
+cd zhli
 cargo build --release
 ```
 
@@ -88,7 +90,7 @@ cargo build --release
 
 ```bash
 # Run the compiled binary
-./target/release/zli
+./target/release/zhli
 
 # Or run directly with cargo
 cargo run --release
@@ -107,26 +109,39 @@ The app creates its database on first launch and seeds all HSK 1–6 words autom
 
 ## Usage
 
-### Main Menu
+### Navigation (global)
 
-Navigate with `↑`/`↓` or `j`/`k`, confirm with `Enter`, quit with `q`.
+| Key | Action |
+|-----|--------|
+| `↑`/`↓` or `j`/`k` | Move cursor |
+| `gg` | Jump to top |
+| `G` | Jump to bottom |
+| `Enter` | Confirm / select |
+| `Esc` | Back / cancel |
+| `:q` | Back to main menu (or quit from menu) |
+| `:q!` | Force quit from anywhere |
+| `Ctrl-C` | Quit immediately |
+
+---
+
+### Main Menu
 
 | Option | Description |
 |--------|-------------|
-| Study / Review Cards | Select level and mode, then start a session |
-| Select Level & Mode | Configure without starting a session |
+| Study / Review Cards | Choose mode and content, then start a session |
 | Stats & Report Card | View progress, streaks, and weakest words |
-| Add Word to Deck | Create or name a custom deck |
-| Search & Browse | Search words and add them to a deck |
+| Add Word to Deck | Create a custom deck and add words |
+| Search & Browse | Search all words, add to deck, or delete |
+| About / Rules / Algo | App guide, pinyin rules, SM-2 explanation |
+| Clear Custom Words | Delete all custom words and decks |
+| Reset All Progress | Reset all SRS state to zero |
 | Quit | Exit the app |
 
 ---
 
 ### Study Session
 
-**Step 1 — Level Select:** choose HSK 1–6 with `↑`/`↓`, confirm with `Enter`.
-
-**Step 2 — Mode Select:** pick one study direction with `↑`/`↓`, confirm with `Enter`.
+**Step 1 — Mode Select:** choose a study direction with `↑`/`↓`, confirm with `Enter`. Your choice is saved for next time.
 
 | Mode | You see | You type |
 |------|---------|----------|
@@ -134,6 +149,17 @@ Navigate with `↑`/`↓` or `j`/`k`, confirm with `Enter`, quit with `q`.
 | Chinese → English | 汉字 | English meaning |
 | English → Chinese | English | 汉字 |
 | Pinyin → Chinese | pīnyīn | 汉字 |
+
+**Step 2 — Content Select:** toggle HSK levels and custom decks with `Space`, confirm with `Enter`. Selection is saved for next time.
+
+| Key | Action |
+|-----|--------|
+| `Space` | Toggle selected item |
+| `a` | Select all |
+| `n` | Deselect all |
+| `Enter` | Start session |
+
+---
 
 #### Prompt phase
 
@@ -144,7 +170,7 @@ Navigate with `↑`/`↓` or `j`/`k`, confirm with `Enter`, quit with `q`.
 | `Backspace` | Delete last character |
 | `Esc` | Skip card (counts as Wrong) |
 
-**Pinyin input tip:** tone numbers are accepted — type `ni3hao3` or `ni3 hao3` and it converts to `nǐ hǎo`. Toned diacritics can also be pasted directly. A tone guide is shown on screen as a reminder.
+**Pinyin input:** tone numbers are accepted — type `ni3hao3` or `ni3 hao3` and it converts to `nǐ hǎo`. Toned diacritics can also be typed or pasted directly. A tone guide is shown on-screen.
 
 | Tone | Mark | Type | Sound |
 |------|------|------|-------|
@@ -153,22 +179,20 @@ Navigate with `↑`/`↓` or `j`/`k`, confirm with `Enter`, quit with `q`.
 | 3 | ǎ | a3 | dipping |
 | 4 | à | a4 | falling |
 
+---
+
 #### Grade phase
 
-After submitting, the app suggests a grade based on your answer. You can accept it or adjust.
+After submitting, the app suggests a grade based on your answer. Adjust with `←`/`→` and confirm with `Enter`.
 
 | Key | Action |
 |-----|--------|
 | `←`/`h`  `→`/`l` | Move grade cursor |
+| `0`–`5` | Jump to grade directly |
 | `Enter` | Confirm highlighted grade |
-| `0` | Blackout — no recall |
-| `1` | Wrong |
-| `2` | Hard |
-| `3` | Okay |
-| `4` | Good |
-| `5` | Perfect |
-| `y` | Copy the hanzi to clipboard |
-| `i` | Open word in MDBG online dictionary |
+| `y` | Copy hanzi to clipboard |
+| `i` | Open word in MDBG browser dictionary |
+| `s` | Suspend word (skip in all future sessions) |
 | `Esc` | Return to main menu |
 
 #### SM-2 grade guide
@@ -182,7 +206,7 @@ After submitting, the app suggests a grade based on your answer. You can accept 
 | 4 Good | Correct after a pause | interval × ease factor |
 | 5 Perfect | Instant recall | longer interval |
 
-The **Ease Factor (EF)** starts at 2.5 and adjusts up or down based on your grades. Higher EF = longer gaps between reviews. The floor is 1.3. A word is counted as **learned** once its interval reaches 21 days.
+The **Ease Factor (EF)** starts at 2.5 and adjusts based on grades. Higher EF = longer gaps between reviews. Floor is 1.3. A word is **mature** once its interval reaches 21 days.
 
 ---
 
@@ -190,21 +214,38 @@ The **Ease Factor (EF)** starts at 2.5 and adjusts up or down based on your grad
 
 | Key | Action |
 |-----|--------|
+| `↑`/`↓` or `j`/`k` | Scroll level list |
 | `r` | Refresh |
 | `Esc` / `q` | Return to menu |
 
-Shows: daily streak, reviews today, overall retention, cards due, per-level progress bars (seen / learned), the 10 weakest words by ease factor, and a 7-day review activity chart.
+Shows: daily streak, reviews today, overall retention, cards due, per-level progress (seen / mature), 10 weakest words by ease factor, and a 7-day review activity chart.
 
 ---
 
 ### Custom Decks
 
-1. Go to **Add Word to Deck**, type a deck name in the input field
-2. Press `Tab` to open Search
-3. In Search, type to find words by hanzi, pinyin, or English
-4. Navigate results with `↑`/`↓`, press `Tab` to add the highlighted word to your deck
+1. Go to **Add Word to Deck** and select or create a deck
+2. Type in the search box to find words by hanzi, pinyin, or English
+3. Navigate results with `↑`/`↓`, press `Enter` to add the highlighted word to your deck
+4. Press `/` to search the MDBG online dictionary for words not in the local database
+5. Press `D` on a result to delete a custom word permanently
 
-Words added to a custom deck can be studied by selecting that deck name at review time (selecting a named deck at the Level Select screen is a planned feature — currently all words at the chosen HSK level are included).
+Words in a custom deck are always available for review (no due-date filter applies to deck words).
+
+---
+
+### Online Dictionary (MDBG)
+
+From the Search screen, press `/` to open the online dictionary lookup. Searches run in the background — the UI stays responsive.
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Search online |
+| `↑`/`↓` | Navigate results |
+| `/` | Filter current results |
+| `Enter` on result | Add word to deck |
+| `i` | Open entry in browser |
+| `Esc` | Back |
 
 ---
 

@@ -23,11 +23,15 @@ const MAX_PAGES: usize = 3;
 pub fn lookup(query: &str) -> Result<Vec<DictEntry>> {
     let mut all_results: Vec<DictEntry> = Vec::new();
 
+    // Use "contains" match for ASCII queries (English/pinyin), "begins with" for Chinese
+    let wdqm = if query.chars().any(|c| c as u32 > 0x7F) { "1" } else { "3" };
+
     for page in 0..MAX_PAGES {
         let body = ureq::get("https://www.mdbg.net/chinese/dictionary")
             .query("page", "worddict")
             .query("wdrst", &(page * 10).to_string())
             .query("wdqb", query)
+            .query("wdqm", wdqm)
             .call()?
             .into_string()?;
 

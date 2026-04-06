@@ -44,17 +44,18 @@ impl Database {
                 repetitions   INTEGER NOT NULL DEFAULT 0,
                 due_at        TEXT NOT NULL,
                 last_grade    INTEGER,
-                created_at    TEXT NOT NULL
+                created_at    TEXT NOT NULL,
+                suspended     INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_word_dir
                 ON cards(word_id, direction);
 
             CREATE TABLE IF NOT EXISTS reviews (
-                id         INTEGER PRIMARY KEY,
-                card_id    INTEGER NOT NULL REFERENCES cards(id),
-                grade      INTEGER NOT NULL,
-                time_ms    INTEGER NOT NULL,
+                id          INTEGER PRIMARY KEY,
+                card_id     INTEGER NOT NULL REFERENCES cards(id),
+                grade       INTEGER NOT NULL,
+                time_ms     INTEGER NOT NULL,
                 reviewed_at TEXT NOT NULL
             );
 
@@ -151,26 +152,28 @@ impl Database {
 
         let where_clause = conditions.join(" OR ");
         let sql = format!(
-            "SELECT c.id, c.direction, c.ease_factor, c.interval_days,
+            "SELECT c.id, w.id, c.direction, c.ease_factor, c.interval_days,
                     c.repetitions, w.hanzi, w.pinyin, w.english, w.level
              FROM cards c JOIN words w ON w.id = c.word_id
              WHERE ({where_clause})
                AND c.direction IN ({dir_ph})
+               AND c.suspended = 0
              ORDER BY RANDOM() LIMIT ?"
         );
 
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(params), |r| {
             Ok(CardRow {
-                id: r.get(0)?,
-                direction: r.get(1)?,
-                ease_factor: r.get(2)?,
-                interval_days: r.get(3)?,
-                repetitions: r.get(4)?,
-                hanzi: r.get(5)?,
-                pinyin: r.get(6)?,
-                english: r.get(7)?,
-                level: r.get(8)?,
+                id:           r.get(0)?,
+                word_id:      r.get(1)?,
+                direction:    r.get(2)?,
+                ease_factor:  r.get(3)?,
+                interval_days: r.get(4)?,
+                repetitions:  r.get(5)?,
+                hanzi:        r.get(6)?,
+                pinyin:       r.get(7)?,
+                english:      r.get(8)?,
+                level:        r.get(9)?,
             })
         })?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -242,7 +245,33 @@ impl Database {
         Ok(rows)
     }
 
+    pub fn suspend_word(&self, word_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE cards SET suspended = 1 WHERE word_id = ?1",
+            params![word_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_word(&self, word_id: i64) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM reviews WHERE card_id IN (SELECT id FROM cards WHERE word_id = ?1)",
+            params![word_id],
+        )?;
+        self.conn.execute("DELETE FROM cards WHERE word_id = ?1", params![word_id])?;
+        self.conn.execute("DELETE FROM words WHERE id = ?1", params![word_id])?;
+        Ok(())
+    }
+
     pub fn add_custom_word(&self, hanzi: &str, pinyin: &str, english: &str, level: u8, deck: Option<&str>) -> Result<()> {
+        // Duplicate check
+        let existing: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM words WHERE hanzi = ?1 AND pinyin = ?2",
+            params![hanzi, pinyin], |r| r.get(0),
+        )?;
+        if existing > 0 {
+            anyhow::bail!("'{}' ({}) is already in the dictionary", hanzi, pinyin);
+        }
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO words (hanzi, pinyin, english, level, custom_deck) VALUES (?1,?2,?3,?4,?5)",
@@ -436,6 +465,27 @@ impl Database {
         }
         Ok(streak)
     }
+
+    pub fn save_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_setting(&self, key: &str) -> Result<Option<String>> {
+        match self.conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |r| r.get(0),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
 }
 
 fn placeholders(n: usize) -> String {
@@ -454,6 +504,7 @@ fn db_path() -> Result<PathBuf> {
 #[derive(Debug, Clone)]
 pub struct CardRow {
     pub id: i64,
+    pub word_id: i64,
     pub direction: String,
     pub ease_factor: f64,
     pub interval_days: f64,
