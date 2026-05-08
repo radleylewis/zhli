@@ -1,6 +1,5 @@
 use anyhow::Result;
 use rusqlite::{Connection, params, params_from_iter, types::Value, OptionalExtension};
-use std::path::PathBuf;
 use chrono::Utc;
 
 use crate::srs::{CardDirection};
@@ -10,12 +9,11 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn open() -> Result<Self> {
-        let path = db_path()?;
+    pub fn open(path: &std::path::Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(&path)?;
+        let conn = Connection::open(path)?;
         let db = Database { conn };
         db.migrate()?;
         Ok(db)
@@ -78,6 +76,9 @@ impl Database {
             INSERT OR IGNORE INTO word_deck_memberships (word_id, deck_name)
                 SELECT id, custom_deck FROM words
                 WHERE custom_deck IS NOT NULL AND custom_deck != '';
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_words_hanzi_pinyin
+                ON words(hanzi, pinyin);
         ")?;
         Ok(())
     }
@@ -249,7 +250,8 @@ impl Database {
                     (SELECT GROUP_CONCAT(wdm2.deck_name, char(31))
                      FROM word_deck_memberships wdm2
                      WHERE wdm2.word_id = w.id
-                     ORDER BY wdm2.deck_name)
+                     ORDER BY wdm2.deck_name),
+                    COALESCE((SELECT MIN(c.suspended) FROM cards c WHERE c.word_id = w.id), 0)
              FROM words w
              JOIN word_deck_memberships wdm ON wdm.word_id = w.id
              WHERE wdm.deck_name = ?1
@@ -262,6 +264,7 @@ impl Database {
                 english: r.get(3)?, level: r.get(4)?,
                 decks: deck_list.map(|s| s.split('\x1F').map(|d| d.to_string()).collect())
                                  .unwrap_or_default(),
+                suspended: r.get::<_, i64>(6)? == 1,
             })
         })?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -353,7 +356,8 @@ impl Database {
                     (SELECT GROUP_CONCAT(wdm.deck_name, char(31))
                      FROM word_deck_memberships wdm
                      WHERE wdm.word_id = w.id
-                     ORDER BY wdm.deck_name)
+                     ORDER BY wdm.deck_name),
+                    COALESCE((SELECT MIN(c.suspended) FROM cards c WHERE c.word_id = w.id), 0)
              FROM words w
              WHERE w.hanzi LIKE ?1 OR w.pinyin LIKE ?1 OR w.english LIKE ?1
              LIMIT 50"
@@ -368,9 +372,34 @@ impl Database {
                 level: r.get(4)?,
                 decks: deck_list.map(|s| s.split('\x1F').map(|d| d.to_string()).collect())
                                  .unwrap_or_default(),
+                suspended: r.get::<_, i64>(6)? == 1,
             })
         })?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    pub fn unsuspend_word(&self, word_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE cards SET suspended = 0 WHERE word_id = ?1",
+            params![word_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_word_from_deck(&self, word_id: i64, deck_name: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM word_deck_memberships WHERE word_id = ?1 AND deck_name = ?2",
+            params![word_id, deck_name],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_word(&self, id: i64, hanzi: &str, pinyin: &str, english: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE words SET hanzi = ?1, pinyin = ?2, english = ?3 WHERE id = ?4",
+            params![hanzi, pinyin, english, id],
+        )?;
+        Ok(())
     }
 
     // ── Stats ────────────────────────────────────────────────────────────────
@@ -542,41 +571,6 @@ fn placeholders(n: usize) -> String {
     std::iter::repeat("?").take(n).collect::<Vec<_>>().join(",")
 }
 
-fn expand_tilde(s: &str) -> PathBuf {
-    if let Some(rest) = s.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(s)
-}
-
-fn db_path() -> Result<PathBuf> {
-    // Check ~/.config/zhli/config for a db_path override.
-    // Format:  db_path = /some/path/data.db
-    if let Some(cfg_dir) = dirs::config_dir() {
-        let rc = cfg_dir.join("zhli").join("config");
-        if rc.exists() {
-            let contents = std::fs::read_to_string(&rc)?;
-            for line in contents.lines() {
-                let line = line.trim();
-                if line.starts_with('#') || line.is_empty() {
-                    continue;
-                }
-                if let Some(rest) = line.strip_prefix("db_path") {
-                    let val = rest.trim_start_matches(|c: char| c == '=' || c.is_whitespace());
-                    if !val.is_empty() {
-                        return Ok(expand_tilde(val));
-                    }
-                }
-            }
-        }
-    }
-    let mut p = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
-    p.push("zhli");
-    p.push("data.db");
-    Ok(p)
-}
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -602,6 +596,7 @@ pub struct WordRow {
     pub english: String,
     pub level: u8,
     pub decks: Vec<String>,
+    pub suspended: bool,
 }
 
 #[derive(Debug)]

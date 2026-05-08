@@ -37,6 +37,7 @@ pub fn render(f: &mut Frame, app: &App) {
         Screen::AddToDeck       => render_add_to_deck(f, app, area),
         Screen::AddCustomWord   => render_add_custom_word(f, app, area),
         Screen::SearchDeck      => render_search_deck(f, app, area),
+        Screen::EditWord        => render_edit_word(f, app, area),
         Screen::About           => render_about(f, app, area),
         Screen::Confirm(ref action) => render_confirm(f, action, area),
     }
@@ -821,8 +822,10 @@ fn render_about(f: &mut Frame, _app: &App, area: Rect) {
         Line::from(Span::styled("  EF never drops below 1.3.", Style::default().fg(GRAY))),
         Line::from(""),
         Line::from(Span::styled(" Deck Practice Mode", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled("  Custom decks bypass the due-date filter —", Style::default().fg(WHITE))),
+        Line::from(Span::styled("  Deck words bypass the SRS due-date filter —", Style::default().fg(WHITE))),
         Line::from(Span::styled("  all cards in the deck are always available.", Style::default().fg(WHITE))),
+        Line::from(Span::styled("  A word can belong to multiple decks.", Style::default().fg(WHITE))),
+        Line::from(Span::styled("  HSK words added to a deck stay in their HSK level.", Style::default().fg(GRAY))),
         Line::from(Span::styled("  SRS scheduling still applies when grading.", Style::default().fg(GRAY))),
         Line::from(""),
         Line::from(Span::styled("  Esc / Enter / Q  Return to menu", Style::default().fg(GRAY))),
@@ -1020,12 +1023,14 @@ fn render_search_deck(f: &mut Frame, app: &App, area: Rect) {
         } else {
             format!(" [{}]", w.decks.join(", "))
         };
+        let suspended_tag = if w.suspended { " [suspended]" } else { "" };
         let prefix = if selected { "▶ " } else { "  " };
         let tag_style = if in_target { Style::default().fg(GREEN) } else { style };
         let level_str = if w.level == 0 { "Other".to_string() } else { format!("HSK{}", w.level) };
         ListItem::new(Line::from(vec![
             Span::styled(format!("{}{}  {}  {}  {}", prefix, w.hanzi, w.pinyin, w.english, level_str), style),
             Span::styled(deck_tag, tag_style),
+            Span::styled(suspended_tag, Style::default().fg(WARN)),
         ]))
     }).collect();
 
@@ -1057,9 +1062,10 @@ fn render_search_deck(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, chunks[1]);
 
     let deck_name = if app.deck_name_input.is_empty() { "My Deck" } else { &app.deck_name_input };
+    let remove_hint = if !app.deck_name_input.is_empty() { "  •  R Remove from deck" } else { "" };
     let footer = Paragraph::new(format!(
-        "Type to search  •  ↑↓ Navigate  •  Enter Add to \"{}\"  •  D Delete  •  Esc Back",
-        deck_name,
+        "Type to search  •  ↑↓ Navigate  •  Enter Add to \"{}\"  •  E Edit  •  S Suspend  •  D Delete{}  •  Esc Back",
+        deck_name, remove_hint,
     ))
     .style(Style::default().fg(GRAY))
     .alignment(Alignment::Center);
@@ -1183,4 +1189,51 @@ fn render_add_custom_word(f: &mut Frame, app: &App, area: Rect) {
         .style(Style::default().fg(GRAY))
         .alignment(Alignment::Center);
     f.render_widget(footer, chunks[idx_footer]);
+}
+
+fn render_edit_word(f: &mut Frame, app: &App, area: Rect) {
+    let popup = centered_rect(70, 55, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" ✏  Edit Custom Word ")
+        .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(BG));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(2),
+        ])
+        .margin(1)
+        .split(inner);
+
+    let labels = ["Hanzi", "Pinyin", "English"];
+    for (i, (label, chunk)) in labels.iter().zip(chunks.iter()).enumerate() {
+        let focused = i == app.edit_field;
+        let border_color = if focused { CYAN } else { GRAY };
+        let text = format!("{}{}", app.edit_bufs[i], if focused { "█" } else { "" });
+        let p = Paragraph::new(text)
+            .block(Block::default()
+                .title(format!(" {} ", label))
+                .title_style(Style::default().fg(border_color))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(border_color)))
+            .style(Style::default().fg(WHITE));
+        f.render_widget(p, *chunk);
+    }
+
+    let footer = Paragraph::new("Tab/↑↓ Switch field  •  Enter Save  •  Esc Cancel")
+        .style(Style::default().fg(GRAY))
+        .alignment(Alignment::Center);
+    f.render_widget(footer, chunks[3]);
 }

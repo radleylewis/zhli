@@ -1,3 +1,4 @@
+mod config;
 mod data;
 mod db;
 mod dict;
@@ -13,34 +14,32 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{io, time::Duration};
 
+use config::Config;
 use db::Database;
 use ui::app_state::App;
 use ui::events::handle_event;
 use ui::render::render;
 
 fn main() -> Result<()> {
-    // Init DB
-    let db = Database::open()?;
+    let cfg = Config::load();
+
+    let db = Database::open(&cfg.db_path())?;
     db.seed_words()?;
 
-    // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(db);
+    let mut app = App::new(db, cfg.session_limit);
 
-    // Event loop
     loop {
-        // Clear status message after 3 seconds
         if app.status_set_at.map(|t| t.elapsed().as_secs() >= 3).unwrap_or(false) {
             app.status_message.clear();
             app.status_set_at = None;
         }
 
-        // Poll background dictionary lookup (non-blocking)
         let dict_done = if let Some(rx) = &app.dict_rx {
             rx.try_recv().ok()
         } else {
@@ -77,7 +76,6 @@ fn main() -> Result<()> {
         }
     }
 
-    // Restore terminal
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;

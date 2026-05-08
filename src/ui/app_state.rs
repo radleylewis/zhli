@@ -16,12 +16,13 @@ pub enum ClearAction {
 pub enum Screen {
     MainMenu,
     ModeSelect,
-    ContentSelect,   // replaces LevelSelect + DeckSelect
+    ContentSelect,
     AddCustomWord,
     Review,
     Stats,
     AddToDeck,
     SearchDeck,
+    EditWord,
     About,
     Confirm(ClearAction),
 }
@@ -98,10 +99,16 @@ pub struct App {
     pub clipboard: Option<arboard::Clipboard>,
     // Stats screen scroll offset (indexes into level_stats list)
     pub stats_scroll: usize,
+    // Session configuration
+    pub session_limit: usize,
+    // Edit word screen state
+    pub edit_word_id: i64,
+    pub edit_field: usize,         // 0 = hanzi, 1 = pinyin, 2 = english
+    pub edit_bufs: [String; 3],
 }
 
 impl App {
-    pub fn new(db: Database) -> Self {
+    pub fn new(db: Database, session_limit: usize) -> Self {
         // Load persisted mode cursor
         let mode_cursor = db.load_setting("mode_cursor").ok().flatten()
             .and_then(|v| v.parse::<usize>().ok())
@@ -170,6 +177,10 @@ impl App {
             last_char: None,
             clipboard: arboard::Clipboard::new().ok(),
             stats_scroll: 0,
+            session_limit,
+            edit_word_id: 0,
+            edit_field: 0,
+            edit_bufs: [String::new(), String::new(), String::new()],
         }
     }
 
@@ -203,7 +214,7 @@ impl App {
             &selected_levels,
             &selected_decks,
             &self.selected_directions,
-            50,
+            self.session_limit,
         )?;
         // Shuffle for variety
         use rand::seq::SliceRandom;
