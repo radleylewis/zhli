@@ -6,6 +6,13 @@ use std::sync::mpsc;
 use crate::ui::app_state::{App, ClearAction, ContentItem, ContentKind, ReviewPhase, Screen};
 use crate::srs::{CardDirection, ReviewGrade};
 
+fn apply_grade(app: &mut App, grade: ReviewGrade) {
+    if let Err(e) = app.apply_grade(grade) {
+        app.status_message = format!("Error saving grade: {e}");
+        app.status_set_at = Some(Instant::now());
+    }
+}
+
 fn spawn_dict_lookup(app: &mut App) {
     let (tx, rx) = mpsc::channel();
     app.dict_rx = Some(rx);
@@ -200,13 +207,20 @@ fn handle_mode_select(app: &mut App, code: KeyCode) {
             let old_decks: Vec<(String, bool)> = app.content_items.iter()
                 .filter_map(|it| if let ContentKind::Deck(d) = &it.kind { Some((d.clone(), it.selected)) } else { None })
                 .collect();
+            // On first entry after startup old_decks is empty; fall back to persisted selection.
+            let saved_deck_sel: Vec<String> = app.db.load_setting("selected_decks").ok().flatten()
+                .map(|v| v.split('\x1F').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect())
+                .unwrap_or_default();
             app.content_items = (1u8..=6)
                 .map(|l| {
                     let sel = old_hsk.iter().find(|(level, _)| *level == l).map(|(_, s)| *s).unwrap_or(true);
                     ContentItem { kind: ContentKind::Hsk(l), selected: sel }
                 })
                 .chain(decks.into_iter().map(|d| {
-                    let sel = old_decks.iter().find(|(name, _)| name == &d).map(|(_, s)| *s).unwrap_or(false);
+                    // Prefer in-session selection; fall back to persisted selection for new/unknown decks.
+                    let sel = old_decks.iter().find(|(name, _)| name == &d)
+                        .map(|(_, s)| *s)
+                        .unwrap_or_else(|| saved_deck_sel.contains(&d));
                     ContentItem { kind: ContentKind::Deck(d), selected: sel }
                 }))
                 .collect();
@@ -264,12 +278,12 @@ fn handle_review(app: &mut App, code: KeyCode) -> Result<()> {
                     if app.grade_cursor < 5 { app.grade_cursor += 1; }
                 }
                 // Number shortcuts still work
-                KeyCode::Char('0') => { app.apply_grade(ReviewGrade::Blackout)?; }
-                KeyCode::Char('1') => { app.apply_grade(ReviewGrade::Wrong)?; }
-                KeyCode::Char('2') => { app.apply_grade(ReviewGrade::Hard)?; }
-                KeyCode::Char('3') => { app.apply_grade(ReviewGrade::Okay)?; }
-                KeyCode::Char('4') => { app.apply_grade(ReviewGrade::Good)?; }
-                KeyCode::Char('5') => { app.apply_grade(ReviewGrade::Perfect)?; }
+                KeyCode::Char('0') => { apply_grade(app, ReviewGrade::Blackout); }
+                KeyCode::Char('1') => { apply_grade(app, ReviewGrade::Wrong); }
+                KeyCode::Char('2') => { apply_grade(app, ReviewGrade::Hard); }
+                KeyCode::Char('3') => { apply_grade(app, ReviewGrade::Okay); }
+                KeyCode::Char('4') => { apply_grade(app, ReviewGrade::Good); }
+                KeyCode::Char('5') => { apply_grade(app, ReviewGrade::Perfect); }
                 // Enter applies the highlighted grade
                 KeyCode::Enter => {
                     let grade = match app.grade_cursor {
@@ -280,7 +294,7 @@ fn handle_review(app: &mut App, code: KeyCode) -> Result<()> {
                         4 => ReviewGrade::Good,
                         _ => ReviewGrade::Perfect,
                     };
-                    app.apply_grade(grade)?;
+                    apply_grade(app, grade);
                 }
                 // Yank hanzi to clipboard
                 // The Clipboard object is kept alive in app.clipboard so content persists on X11
@@ -469,7 +483,10 @@ fn handle_search_deck(app: &mut App, code: KeyCode) -> Result<()> {
         }
         KeyCode::Enter => {
             if app.search_cursor < app.search_results.len() {
-                app.add_selected_to_deck()?;
+                if let Err(e) = app.add_selected_to_deck() {
+                    app.status_message = e.to_string();
+                    app.status_set_at = Some(Instant::now());
+                }
             } else {
                 // "＋ Add custom word" selected — pre-fill query from search box
                 app.dict_query = app.search_query.clone();
@@ -551,17 +568,23 @@ fn handle_add_custom_word(app: &mut App, code: KeyCode) -> Result<()> {
                 if let Some(&entry_ref) = filtered.get(app.dict_cursor) {
                     let entry = entry_ref.clone();
                     let deck = if app.deck_name_input.is_empty() { None } else { Some(app.deck_name_input.as_str()) };
-                    app.db.add_custom_word(&entry.hanzi, &entry.pinyin, &entry.english, 0, deck)?;
-                    app.status_message = format!("Added '{}'{}.", entry.hanzi,
-                        deck.map(|d| format!(" to '{}'", d)).unwrap_or_default());
+                    match app.db.add_custom_word(&entry.hanzi, &entry.pinyin, &entry.english, 0, deck) {
+                        Ok(()) => {
+                            app.status_message = format!("Added '{}'{}.", entry.hanzi,
+                                deck.map(|d| format!(" to '{}'", d)).unwrap_or_default());
+                            app.dict_results.clear();
+                            app.dict_filter.clear();
+                            app.dict_filter_active = false;
+                            app.dict_status.clear();
+                            app.dict_query.clear();
+                            app.dict_last_query.clear();
+                            app.screen = Screen::SearchDeck;
+                        }
+                        Err(e) => {
+                            app.status_message = e.to_string();
+                        }
+                    }
                     app.status_set_at = Some(Instant::now());
-                    app.dict_results.clear();
-                    app.dict_filter.clear();
-                    app.dict_filter_active = false;
-                    app.dict_status.clear();
-                    app.dict_query.clear();
-                    app.dict_last_query.clear();
-                    app.screen = Screen::SearchDeck;
                 }
             }
             KeyCode::Char(c) => {
@@ -616,15 +639,21 @@ fn handle_add_custom_word(app: &mut App, code: KeyCode) -> Result<()> {
                 // Add the highlighted result
                 if let Some(entry) = app.dict_results.get(app.dict_cursor).cloned() {
                     let deck = if app.deck_name_input.is_empty() { None } else { Some(app.deck_name_input.as_str()) };
-                    app.db.add_custom_word(&entry.hanzi, &entry.pinyin, &entry.english, 0, deck)?;
-                    app.status_message = format!("Added '{}'{}.", entry.hanzi,
-                        deck.map(|d| format!(" to '{}'", d)).unwrap_or_default());
+                    match app.db.add_custom_word(&entry.hanzi, &entry.pinyin, &entry.english, 0, deck) {
+                        Ok(()) => {
+                            app.status_message = format!("Added '{}'{}.", entry.hanzi,
+                                deck.map(|d| format!(" to '{}'", d)).unwrap_or_default());
+                            app.dict_results.clear();
+                            app.dict_status.clear();
+                            app.dict_query.clear();
+                            app.dict_last_query.clear();
+                            app.screen = Screen::SearchDeck;
+                        }
+                        Err(e) => {
+                            app.status_message = e.to_string();
+                        }
+                    }
                     app.status_set_at = Some(Instant::now());
-                    app.dict_results.clear();
-                    app.dict_status.clear();
-                    app.dict_query.clear();
-                    app.dict_last_query.clear();
-                    app.screen = Screen::SearchDeck;
                 }
             } else if !app.dict_query.is_empty() {
                 app.dict_status = "Searching...".to_string();
@@ -678,12 +707,19 @@ fn handle_content_select(app: &mut App, code: KeyCode) -> Result<()> {
         }
         KeyCode::Enter => {
             if app.content_items.iter().any(|i| i.selected) {
-                app.load_review_session()?;
-                if app.review_queue.is_empty() {
-                    app.status_message = "No cards due — all caught up!".to_string();
-                    app.status_set_at = Some(Instant::now());
-                } else {
-                    app.screen = Screen::Review;
+                match app.load_review_session() {
+                    Ok(()) => {
+                        if app.review_queue.is_empty() {
+                            app.status_message = "No cards due — all caught up!".to_string();
+                            app.status_set_at = Some(Instant::now());
+                        } else {
+                            app.screen = Screen::Review;
+                        }
+                    }
+                    Err(e) => {
+                        app.status_message = format!("Failed to load cards: {e}");
+                        app.status_set_at = Some(Instant::now());
+                    }
                 }
             }
         }
@@ -705,30 +741,40 @@ fn handle_about(app: &mut App, code: KeyCode) {
 fn handle_confirm(app: &mut App, code: KeyCode, action: ClearAction) -> Result<()> {
     match code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
-            match action {
+            let result = match action {
                 ClearAction::CustomWords => {
-                    app.db.clear_custom_words()?;
-                    app.status_message = "Custom words cleared.".to_string();
-                    app.screen = Screen::MainMenu;
+                    app.db.clear_custom_words().map(|()| {
+                        app.status_message = "Custom words cleared.".to_string();
+                        app.screen = Screen::MainMenu;
+                    })
                 }
                 ClearAction::Progress => {
-                    app.db.reset_progress()?;
-                    app.status_message = "All progress reset.".to_string();
-                    app.screen = Screen::MainMenu;
+                    app.db.reset_progress().map(|()| {
+                        app.status_message = "All progress reset.".to_string();
+                        app.screen = Screen::MainMenu;
+                    })
                 }
                 ClearAction::Deck(name) => {
-                    app.db.delete_deck(&name)?;
-                    app.status_message = format!("Deck '{}' deleted.", name);
-                    app.load_decks()?;
-                    app.deck_cursor = 0;
-                    app.screen = Screen::AddToDeck;
+                    app.db.delete_deck(&name)
+                        .and_then(|()| app.load_decks())
+                        .map(|()| {
+                            app.status_message = format!("Deck '{}' deleted.", name);
+                            app.deck_cursor = 0;
+                            app.screen = Screen::AddToDeck;
+                        })
                 }
                 ClearAction::Word(word_id, hanzi) => {
-                    app.db.delete_word(word_id)?;
-                    app.status_message = format!("Deleted '{}'.", hanzi);
-                    app.do_search()?;
-                    app.screen = Screen::SearchDeck;
+                    app.db.delete_word(word_id)
+                        .and_then(|()| app.do_search())
+                        .map(|()| {
+                            app.status_message = format!("Deleted '{}'.", hanzi);
+                            app.screen = Screen::SearchDeck;
+                        })
                 }
+            };
+            if let Err(e) = result {
+                app.status_message = format!("Error: {e}");
+                app.screen = Screen::MainMenu;
             }
             app.status_set_at = Some(Instant::now());
         }

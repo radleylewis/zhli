@@ -1012,11 +1012,13 @@ fn render_search_deck(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(WHITE)
         };
         let target_deck = if app.deck_name_input.is_empty() { "My Deck" } else { &app.deck_name_input };
-        let in_target = w.custom_deck.as_deref() == Some(target_deck);
+        let in_target = w.decks.iter().any(|d| d == target_deck);
         let deck_tag = if in_target {
             " ✓".to_string()
+        } else if w.decks.is_empty() {
+            String::new()
         } else {
-            w.custom_deck.as_deref().map(|d| format!(" [{}]", d)).unwrap_or_default()
+            format!(" [{}]", w.decks.join(", "))
         };
         let prefix = if selected { "▶ " } else { "  " };
         let tag_style = if in_target { Style::default().fg(GREEN) } else { style };

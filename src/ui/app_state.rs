@@ -181,6 +181,12 @@ impl App {
             .collect::<Vec<_>>()
             .join(",");
         let _ = self.db.save_setting("selected_levels", &levels);
+        let decks: String = self.content_items.iter()
+            .filter(|i| i.selected)
+            .filter_map(|i| if let ContentKind::Deck(d) = &i.kind { Some(d.clone()) } else { None })
+            .collect::<Vec<_>>()
+            .join("\x1F");
+        let _ = self.db.save_setting("selected_decks", &decks);
     }
 
     pub fn load_review_session(&mut self) -> Result<()> {

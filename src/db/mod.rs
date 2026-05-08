@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::{Connection, params, params_from_iter, types::Value};
+use rusqlite::{Connection, params, params_from_iter, types::Value, OptionalExtension};
 use std::path::PathBuf;
 use chrono::Utc;
 
@@ -68,6 +68,16 @@ impl Database {
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS word_deck_memberships (
+                word_id   INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE,
+                deck_name TEXT    NOT NULL,
+                PRIMARY KEY (word_id, deck_name)
+            );
+
+            INSERT OR IGNORE INTO word_deck_memberships (word_id, deck_name)
+                SELECT id, custom_deck FROM words
+                WHERE custom_deck IS NOT NULL AND custom_deck != '';
         ")?;
         Ok(())
     }
@@ -132,15 +142,17 @@ impl Database {
                 params.push(Value::Integer(i64::from(l)));
             }
             params.push(Value::Text(now));
-            // HSK words: apply SRS due-date filter; custom_deck IS NULL avoids counting deck words twice
-            conditions.push(format!(
-                "(w.level IN ({ph}) AND w.custom_deck IS NULL AND c.due_at <= ?)"
-            ));
+            // HSK words: apply SRS due-date filter.
+            conditions.push(format!("(w.level IN ({ph}) AND c.due_at <= ?)"));
         }
 
         for &deck in selected_decks {
-            // Deck = practice mode: no due-date filter, always available
-            conditions.push("(w.custom_deck = ?)".to_string());
+            // Deck = practice mode: no due-date filter, always available.
+            // A word can be in multiple decks; EXISTS avoids row duplication.
+            conditions.push(
+                "(EXISTS (SELECT 1 FROM word_deck_memberships wdm \
+                          WHERE wdm.word_id = w.id AND wdm.deck_name = ?))".to_string()
+            );
             params.push(Value::Text(deck.to_string()));
         }
 
@@ -204,8 +216,8 @@ impl Database {
             params![deck_name],
         )?;
         self.conn.execute(
-            "UPDATE words SET custom_deck=?1 WHERE id=?2",
-            params![deck_name, word_id],
+            "INSERT OR IGNORE INTO word_deck_memberships (word_id, deck_name) VALUES (?1, ?2)",
+            params![word_id, deck_name],
         )?;
         Ok(())
     }
@@ -226,20 +238,30 @@ impl Database {
     }
 
     pub fn delete_deck(&self, name: &str) -> Result<()> {
-        self.conn.execute("UPDATE words SET custom_deck = NULL WHERE custom_deck = ?1", params![name])?;
+        self.conn.execute("DELETE FROM word_deck_memberships WHERE deck_name = ?1", params![name])?;
         self.conn.execute("DELETE FROM custom_decks WHERE name = ?1", params![name])?;
         Ok(())
     }
 
     pub fn words_in_deck(&self, deck_name: &str) -> Result<Vec<WordRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, hanzi, pinyin, english, level, custom_deck FROM words
-             WHERE custom_deck = ?1 ORDER BY level, hanzi"
+            "SELECT w.id, w.hanzi, w.pinyin, w.english, w.level,
+                    (SELECT GROUP_CONCAT(wdm2.deck_name, char(31))
+                     FROM word_deck_memberships wdm2
+                     WHERE wdm2.word_id = w.id
+                     ORDER BY wdm2.deck_name)
+             FROM words w
+             JOIN word_deck_memberships wdm ON wdm.word_id = w.id
+             WHERE wdm.deck_name = ?1
+             ORDER BY w.level, w.hanzi"
         )?;
         let rows = stmt.query_map(params![deck_name], |r| {
+            let deck_list: Option<String> = r.get(5)?;
             Ok(WordRow {
                 id: r.get(0)?, hanzi: r.get(1)?, pinyin: r.get(2)?,
-                english: r.get(3)?, level: r.get(4)?, custom_deck: r.get(5)?,
+                english: r.get(3)?, level: r.get(4)?,
+                decks: deck_list.map(|s| s.split('\x1F').map(|d| d.to_string()).collect())
+                                 .unwrap_or_default(),
             })
         })?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -264,18 +286,27 @@ impl Database {
     }
 
     pub fn add_custom_word(&self, hanzi: &str, pinyin: &str, english: &str, level: u8, deck: Option<&str>) -> Result<()> {
-        // Duplicate check
-        let existing: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM words WHERE hanzi = ?1 AND pinyin = ?2",
-            params![hanzi, pinyin], |r| r.get(0),
-        )?;
-        if existing > 0 {
+        let existing: Option<(i64, u8)> = self.conn.query_row(
+            "SELECT id, level FROM words WHERE hanzi = ?1 AND pinyin = ?2",
+            params![hanzi, pinyin], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+
+        if let Some((word_id, existing_level)) = existing {
+            if existing_level > 0 {
+                // HSK word — leave it in its HSK level, cannot belong to a deck simultaneously.
+                anyhow::bail!("'{}' is already in HSK {}.", hanzi, existing_level);
+            }
+            if let Some(deck_name) = deck {
+                // Custom word — assign it to the requested deck instead of failing.
+                return self.add_word_to_deck(word_id, deck_name);
+            }
             anyhow::bail!("'{}' ({}) is already in the dictionary", hanzi, pinyin);
         }
+
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
-            "INSERT INTO words (hanzi, pinyin, english, level, custom_deck) VALUES (?1,?2,?3,?4,?5)",
-            params![hanzi, pinyin, english, level, deck],
+            "INSERT INTO words (hanzi, pinyin, english, level) VALUES (?1,?2,?3,?4)",
+            params![hanzi, pinyin, english, level],
         )?;
         let word_id = self.conn.last_insert_rowid();
         let mut stmt = self.conn.prepare(
@@ -286,7 +317,7 @@ impl Database {
             stmt.execute(params![word_id, dir, now])?;
         }
         if let Some(deck_name) = deck {
-            self.conn.execute("INSERT OR IGNORE INTO custom_decks (name) VALUES (?1)", params![deck_name])?;
+            self.add_word_to_deck(word_id, deck_name)?;
         }
         Ok(())
     }
@@ -318,18 +349,25 @@ impl Database {
     pub fn search_words(&self, query: &str) -> Result<Vec<WordRow>> {
         let pat = format!("%{}%", query);
         let mut stmt = self.conn.prepare(
-            "SELECT id, hanzi, pinyin, english, level, custom_deck FROM words
-             WHERE hanzi LIKE ?1 OR pinyin LIKE ?1 OR english LIKE ?1
+            "SELECT w.id, w.hanzi, w.pinyin, w.english, w.level,
+                    (SELECT GROUP_CONCAT(wdm.deck_name, char(31))
+                     FROM word_deck_memberships wdm
+                     WHERE wdm.word_id = w.id
+                     ORDER BY wdm.deck_name)
+             FROM words w
+             WHERE w.hanzi LIKE ?1 OR w.pinyin LIKE ?1 OR w.english LIKE ?1
              LIMIT 50"
         )?;
         let rows = stmt.query_map(params![pat], |r| {
+            let deck_list: Option<String> = r.get(5)?;
             Ok(WordRow {
                 id: r.get(0)?,
                 hanzi: r.get(1)?,
                 pinyin: r.get(2)?,
                 english: r.get(3)?,
                 level: r.get(4)?,
-                custom_deck: r.get(5)?,
+                decks: deck_list.map(|s| s.split('\x1F').map(|d| d.to_string()).collect())
+                                 .unwrap_or_default(),
             })
         })?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -368,7 +406,8 @@ impl Database {
         // Streak: count consecutive days with at least 1 review
         let streak = self.calculate_streak()?;
 
-        // Per-level breakdown: HSK levels grouped by level, custom words grouped by deck name
+        // Per-level breakdown: HSK levels + per-deck custom word stats.
+        // Deck stats join via word_deck_memberships so one word can appear in multiple decks.
         let mut level_stmt = self.conn.prepare(
             "SELECT w.level, CAST(NULL AS TEXT),
                     COUNT(*),
@@ -378,13 +417,24 @@ impl Database {
              WHERE w.level > 0
              GROUP BY w.level
              UNION ALL
-             SELECT 0, COALESCE(w.custom_deck, '(no deck)'),
+             SELECT 0, d.name,
+                    COUNT(*),
+                    SUM(CASE WHEN c.interval_days>=21 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN c.repetitions>0    THEN 1 ELSE 0 END)
+             FROM custom_decks d
+             JOIN word_deck_memberships wdm ON wdm.deck_name = d.name
+             JOIN words w ON w.id = wdm.word_id AND w.level = 0
+             JOIN cards c ON c.word_id = w.id
+             GROUP BY d.name
+             UNION ALL
+             SELECT 0, '(no deck)',
                     COUNT(*),
                     SUM(CASE WHEN c.interval_days>=21 THEN 1 ELSE 0 END),
                     SUM(CASE WHEN c.repetitions>0    THEN 1 ELSE 0 END)
              FROM cards c JOIN words w ON w.id=c.word_id
              WHERE w.level = 0
-             GROUP BY w.custom_deck
+               AND NOT EXISTS (SELECT 1 FROM word_deck_memberships WHERE word_id = w.id)
+             HAVING COUNT(*) > 0
              ORDER BY 1, 2"
         )?;
         let level_stats: Vec<LevelStat> = level_stmt.query_map([], |r| {
@@ -492,7 +542,36 @@ fn placeholders(n: usize) -> String {
     std::iter::repeat("?").take(n).collect::<Vec<_>>().join(",")
 }
 
+fn expand_tilde(s: &str) -> PathBuf {
+    if let Some(rest) = s.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(s)
+}
+
 fn db_path() -> Result<PathBuf> {
+    // Check ~/.config/zhli/config for a db_path override.
+    // Format:  db_path = /some/path/data.db
+    if let Some(cfg_dir) = dirs::config_dir() {
+        let rc = cfg_dir.join("zhli").join("config");
+        if rc.exists() {
+            let contents = std::fs::read_to_string(&rc)?;
+            for line in contents.lines() {
+                let line = line.trim();
+                if line.starts_with('#') || line.is_empty() {
+                    continue;
+                }
+                if let Some(rest) = line.strip_prefix("db_path") {
+                    let val = rest.trim_start_matches(|c: char| c == '=' || c.is_whitespace());
+                    if !val.is_empty() {
+                        return Ok(expand_tilde(val));
+                    }
+                }
+            }
+        }
+    }
     let mut p = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
     p.push("zhli");
     p.push("data.db");
@@ -522,7 +601,7 @@ pub struct WordRow {
     pub pinyin: String,
     pub english: String,
     pub level: u8,
-    pub custom_deck: Option<String>,
+    pub decks: Vec<String>,
 }
 
 #[derive(Debug)]
