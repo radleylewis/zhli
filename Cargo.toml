@@ -1,6 +1,6 @@
 [package]
 name = "zhli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "ZHLI — Command Line Chinese Trainer with spaced repetition"
 authors = ["Radley E. Sidwell-Lewis"]
