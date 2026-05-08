@@ -35,12 +35,10 @@ pub(super) fn handle_review(app: &mut App, code: KeyCode) -> Result<()> {
         }
         ReviewPhase::ShowAnswer => {
             match code {
-                KeyCode::Left | KeyCode::Char('h') => {
-                    if app.grade_cursor > 0 { app.grade_cursor -= 1; }
-                }
-                KeyCode::Right | KeyCode::Char('l') => {
-                    if app.grade_cursor < 5 { app.grade_cursor += 1; }
-                }
+                KeyCode::Left | KeyCode::Char('h')
+                    if app.grade_cursor > 0 => { app.grade_cursor -= 1; }
+                KeyCode::Right | KeyCode::Char('l')
+                    if app.grade_cursor < 5 => { app.grade_cursor += 1; }
                 KeyCode::Char('0') => { apply_grade(app, ReviewGrade::Blackout); }
                 KeyCode::Char('1') => { apply_grade(app, ReviewGrade::Wrong); }
                 KeyCode::Char('2') => { apply_grade(app, ReviewGrade::Hard); }

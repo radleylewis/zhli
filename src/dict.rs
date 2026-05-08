@@ -80,25 +80,25 @@ fn parse_page(html: &str) -> Result<Vec<DictEntry>> {
 
     let mut results = Vec::new();
 
-    for row in doc.select(&row_sel) {
+    for row in doc.select(row_sel) {
         // Take only the FIRST <a> inside div.hanzi (simplified form, not traditional)
-        let hanzi: String = row.select(&hanzi_a_sel)
+        let hanzi: String = row.select(hanzi_a_sel)
             .next()
-            .map(|a| a.select(&mpt_sel).map(|s| s.text().collect::<String>()).collect())
+            .map(|a| a.select(mpt_sel).map(|s| s.text().collect::<String>()).collect())
             .unwrap_or_default();
 
         // Same for pinyin — first <a> gives simplified form's reading
-        let pinyin: String = row.select(&pinyin_a_sel)
+        let pinyin: String = row.select(pinyin_a_sel)
             .next()
             .map(|a| {
-                a.select(&mpt_sel)
+                a.select(mpt_sel)
                     .map(|s| s.text().collect::<String>())
                     .collect::<Vec<_>>()
                     .join(" ")
             })
             .unwrap_or_default();
 
-        let english: String = row.select(&defs_sel)
+        let english: String = row.select(defs_sel)
             .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();

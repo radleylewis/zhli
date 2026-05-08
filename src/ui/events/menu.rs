@@ -7,15 +7,12 @@ use crate::srs::CardDirection;
 
 pub(super) fn handle_main_menu(app: &mut App, code: KeyCode) -> bool {
     match code {
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.menu_cursor > 0 { app.menu_cursor -= 1; }
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.menu_cursor < 7 { app.menu_cursor += 1; }
-        }
-        KeyCode::Char('g') => {
-            if app.last_char == Some('g') { app.menu_cursor = 0; }
-        }
+        KeyCode::Up | KeyCode::Char('k')
+            if app.menu_cursor > 0 => { app.menu_cursor -= 1; }
+        KeyCode::Down | KeyCode::Char('j')
+            if app.menu_cursor < 7 => { app.menu_cursor += 1; }
+        KeyCode::Char('g')
+            if app.last_char == Some('g') => { app.menu_cursor = 0; }
         KeyCode::Char('G') => { app.menu_cursor = 7; }
         KeyCode::Enter => {
             match app.menu_cursor {
@@ -62,15 +59,12 @@ pub(super) fn handle_mode_select(app: &mut App, code: KeyCode) {
         CardDirection::PinyinToZh,
     ];
     match code {
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.mode_cursor > 0 { app.mode_cursor -= 1; }
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.mode_cursor < 3 { app.mode_cursor += 1; }
-        }
-        KeyCode::Char('g') => {
-            if app.last_char == Some('g') { app.mode_cursor = 0; }
-        }
+        KeyCode::Up | KeyCode::Char('k')
+            if app.mode_cursor > 0 => { app.mode_cursor -= 1; }
+        KeyCode::Down | KeyCode::Char('j')
+            if app.mode_cursor < 3 => { app.mode_cursor += 1; }
+        KeyCode::Char('g')
+            if app.last_char == Some('g') => { app.mode_cursor = 0; }
         KeyCode::Char('G') => { app.mode_cursor = 3; }
         KeyCode::Enter => {
             app.selected_directions = vec![directions[app.mode_cursor].clone()];
@@ -108,18 +102,14 @@ pub(super) fn handle_mode_select(app: &mut App, code: KeyCode) {
 pub(super) fn handle_content_select(app: &mut App, code: KeyCode) -> Result<()> {
     let n = app.content_items.len();
     match code {
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.content_cursor > 0 { app.content_cursor -= 1; }
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.content_cursor + 1 < n { app.content_cursor += 1; }
-        }
-        KeyCode::Char('g') => {
-            if app.last_char == Some('g') { app.content_cursor = 0; }
-        }
-        KeyCode::Char('G') => {
-            if n > 0 { app.content_cursor = n - 1; }
-        }
+        KeyCode::Up | KeyCode::Char('k')
+            if app.content_cursor > 0 => { app.content_cursor -= 1; }
+        KeyCode::Down | KeyCode::Char('j')
+            if app.content_cursor + 1 < n => { app.content_cursor += 1; }
+        KeyCode::Char('g')
+            if app.last_char == Some('g') => { app.content_cursor = 0; }
+        KeyCode::Char('G')
+            if n > 0 => { app.content_cursor = n - 1; }
         KeyCode::Char(' ') => {
             if let Some(item) = app.content_items.get_mut(app.content_cursor) {
                 item.selected = !item.selected;
@@ -134,8 +124,8 @@ pub(super) fn handle_content_select(app: &mut App, code: KeyCode) -> Result<()> 
             for item in &mut app.content_items { item.selected = false; }
             app.save_study_settings();
         }
-        KeyCode::Enter => {
-            if app.content_items.iter().any(|i| i.selected) {
+        KeyCode::Enter
+            if app.content_items.iter().any(|i| i.selected) => {
                 match app.load_review_session() {
                     Ok(()) => {
                         if app.review_queue.is_empty() {
@@ -151,7 +141,6 @@ pub(super) fn handle_content_select(app: &mut App, code: KeyCode) -> Result<()> 
                     }
                 }
             }
-        }
         KeyCode::Esc => { app.screen = Screen::ModeSelect; }
         _ => {}
     }

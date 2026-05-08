@@ -35,7 +35,7 @@ pub(super) fn handle_add_to_deck(app: &mut App, code: KeyCode) -> Result<()> {
                     }
                 }
             }
-            KeyCode::Char(c) => { if app.deck_name_input.len() < 64 { app.deck_name_input.push(c); } }
+            KeyCode::Char(c) if app.deck_name_input.len() < 64 => { app.deck_name_input.push(c); }
             _ => {}
         }
     } else {
@@ -43,24 +43,21 @@ pub(super) fn handle_add_to_deck(app: &mut App, code: KeyCode) -> Result<()> {
         let max_cursor = total.saturating_sub(1);
         match code {
             KeyCode::Esc => { app.screen = Screen::MainMenu; }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if app.deck_cursor > 0 {
+            KeyCode::Up | KeyCode::Char('k')
+                if app.deck_cursor > 0 => {
                     app.deck_cursor -= 1;
                     app.load_deck_preview()?;
                 }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if app.deck_cursor + 1 < total {
+            KeyCode::Down | KeyCode::Char('j')
+                if app.deck_cursor + 1 < total => {
                     app.deck_cursor += 1;
                     app.load_deck_preview()?;
                 }
-            }
-            KeyCode::Char('g') => {
-                if app.last_char == Some('g') {
+            KeyCode::Char('g')
+                if app.last_char == Some('g') => {
                     app.deck_cursor = 0;
                     app.load_deck_preview()?;
                 }
-            }
             KeyCode::Char('G') => {
                 app.deck_cursor = max_cursor;
                 let _ = app.load_deck_preview();
@@ -76,13 +73,12 @@ pub(super) fn handle_add_to_deck(app: &mut App, code: KeyCode) -> Result<()> {
                     app.screen = Screen::SearchDeck;
                 }
             }
-            KeyCode::Char('d') | KeyCode::Delete => {
-                if app.deck_cursor > 0 {
+            KeyCode::Char('d') | KeyCode::Delete
+                if app.deck_cursor > 0 => {
                     if let Some(name) = app.available_decks.get(app.deck_cursor - 1) {
                         app.screen = Screen::Confirm(ClearAction::Deck(name.clone()));
                     }
                 }
-            }
             _ => {}
         }
     }
@@ -93,12 +89,10 @@ pub(super) fn handle_search_deck(app: &mut App, code: KeyCode) -> Result<()> {
     let max_cursor = app.search_results.len();
     match code {
         KeyCode::Esc => { app.screen = Screen::MainMenu; }
-        KeyCode::Up => {
-            if app.search_cursor > 0 { app.search_cursor -= 1; }
-        }
-        KeyCode::Down => {
-            if app.search_cursor < max_cursor { app.search_cursor += 1; }
-        }
+        KeyCode::Up
+            if app.search_cursor > 0 => { app.search_cursor -= 1; }
+        KeyCode::Down
+            if app.search_cursor < max_cursor => { app.search_cursor += 1; }
         KeyCode::Enter => {
             if app.search_cursor < app.search_results.len() {
                 if let Err(e) = app.add_selected_to_deck() {
@@ -141,13 +135,12 @@ pub(super) fn handle_search_deck(app: &mut App, code: KeyCode) -> Result<()> {
             }
         }
         // Uppercase actions — caught before the char catch-all
-        KeyCode::Char('D') | KeyCode::Delete => {
-            if app.search_cursor < app.search_results.len() {
+        KeyCode::Char('D') | KeyCode::Delete
+            if app.search_cursor < app.search_results.len() => {
                 if let Some(word) = app.search_results.get(app.search_cursor) {
                     app.screen = Screen::Confirm(ClearAction::Word(word.id, word.hanzi.clone()));
                 }
             }
-        }
         KeyCode::Char('E') => {
             if let Some(word) = app.search_results.get(app.search_cursor) {
                 if word.level == 0 {
@@ -185,8 +178,8 @@ pub(super) fn handle_search_deck(app: &mut App, code: KeyCode) -> Result<()> {
                 app.status_set_at = Some(Instant::now());
             }
         }
-        KeyCode::Char('R') => {
-            if !app.deck_name_input.is_empty() {
+        KeyCode::Char('R')
+            if !app.deck_name_input.is_empty() => {
                 if let Some(word) = app.search_results.get(app.search_cursor) {
                     let id = word.id;
                     let hanzi = word.hanzi.clone();
@@ -201,7 +194,6 @@ pub(super) fn handle_search_deck(app: &mut App, code: KeyCode) -> Result<()> {
                     app.status_set_at = Some(Instant::now());
                 }
             }
-        }
         // All other chars are search input
         KeyCode::Char(c) => {
             app.search_query.push(c);
@@ -225,9 +217,8 @@ pub(super) fn handle_add_custom_word(app: &mut App, code: KeyCode) -> Result<()>
                 app.dict_filter.pop();
                 app.dict_cursor = 0;
             }
-            KeyCode::Up => {
-                if app.dict_cursor > 0 { app.dict_cursor -= 1; }
-            }
+            KeyCode::Up
+                if app.dict_cursor > 0 => { app.dict_cursor -= 1; }
             KeyCode::Down => {
                 let visible = crate::dict::filter_results(&app.dict_results, &app.dict_filter).len();
                 if app.dict_cursor + 1 < visible { app.dict_cursor += 1; }
@@ -288,12 +279,10 @@ pub(super) fn handle_add_custom_word(app: &mut App, code: KeyCode) -> Result<()>
             app.dict_filter.clear();
             app.dict_cursor = 0;
         }
-        KeyCode::Up => {
-            if app.dict_cursor > 0 { app.dict_cursor -= 1; }
-        }
-        KeyCode::Down => {
-            if app.dict_cursor + 1 < app.dict_results.len() { app.dict_cursor += 1; }
-        }
+        KeyCode::Up
+            if app.dict_cursor > 0 => { app.dict_cursor -= 1; }
+        KeyCode::Down
+            if app.dict_cursor + 1 < app.dict_results.len() => { app.dict_cursor += 1; }
         KeyCode::Enter => {
             let query_changed = app.dict_query != app.dict_last_query;
             if !app.dict_results.is_empty() && !query_changed {

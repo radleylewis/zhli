@@ -46,9 +46,6 @@ impl Database {
                 suspended     INTEGER NOT NULL DEFAULT 0
             );
 
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_word_dir
-                ON cards(word_id, direction);
-
             CREATE TABLE IF NOT EXISTS reviews (
                 id          INTEGER PRIMARY KEY,
                 card_id     INTEGER NOT NULL REFERENCES cards(id),
@@ -76,6 +73,34 @@ impl Database {
             INSERT OR IGNORE INTO word_deck_memberships (word_id, deck_name)
                 SELECT id, custom_deck FROM words
                 WHERE custom_deck IS NOT NULL AND custom_deck != '';
+
+            DELETE FROM reviews WHERE card_id IN (
+                SELECT id FROM cards WHERE id NOT IN (
+                    SELECT MIN(id) FROM cards GROUP BY word_id, direction
+                )
+            );
+            DELETE FROM cards WHERE id NOT IN (
+                SELECT MIN(id) FROM cards GROUP BY word_id, direction
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_word_dir
+                ON cards(word_id, direction);
+
+            DELETE FROM reviews WHERE card_id IN (
+                SELECT c.id FROM cards c WHERE c.word_id IN (
+                    SELECT id FROM words WHERE id NOT IN (
+                        SELECT MIN(id) FROM words GROUP BY hanzi, pinyin
+                    )
+                )
+            );
+            DELETE FROM cards WHERE word_id IN (
+                SELECT id FROM words WHERE id NOT IN (
+                    SELECT MIN(id) FROM words GROUP BY hanzi, pinyin
+                )
+            );
+            DELETE FROM words WHERE id NOT IN (
+                SELECT MIN(id) FROM words GROUP BY hanzi, pinyin
+            );
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_words_hanzi_pinyin
                 ON words(hanzi, pinyin);
@@ -568,7 +593,7 @@ impl Database {
 }
 
 fn placeholders(n: usize) -> String {
-    std::iter::repeat("?").take(n).collect::<Vec<_>>().join(",")
+    std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",")
 }
 
 
