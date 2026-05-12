@@ -61,6 +61,7 @@ pub fn render(f: &mut Frame, app: &App) {
         Screen::SearchDeck      => deck::render_search_deck(f, app, area),
         Screen::EditWord        => deck::render_edit_word(f, app, area),
         Screen::About           => menu::render_about(f, area),
+        Screen::SuspendedWords  => menu::render_suspended_words(f, app, area),
         Screen::Confirm(ref action) => menu::render_confirm(f, action, area),
     }
 

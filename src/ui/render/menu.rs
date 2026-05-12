@@ -37,6 +37,7 @@ pub(super) fn render_main_menu(f: &mut Frame, app: &App, area: Rect) {
         ("📊", "Stats & Report Card",     GREEN),
         ("➕", "Add Word to Deck",        BLUE),
         ("🔍", "Search & Browse",         WHITE),
+        ("💤", "Suspended Words",         YELLOW),
         ("📖", "About / Rules / Algo",    ACCENT),
         ("🗑️", "Clear Custom Words",      WARN),
         ("⚠️", "Reset All Progress",      RED),
@@ -97,29 +98,39 @@ pub(super) fn render_mode_select(f: &mut Frame, app: &App, area: Rect) {
         (CardDirection::PinyinToZh, "Pinyin  → Chinese", "See pinyin, write hanzi"),
     ];
 
+    let sel_count = app.selected_directions.len();
+    let header = if sel_count == 0 {
+        "  Select one or more modes (Space to toggle):".to_string()
+    } else {
+        format!("  {sel_count} mode(s) selected — Enter to continue:")
+    };
+
     let mut lines = vec![
-        Line::from(Span::styled("  Choose a study mode for this session:", Style::default().fg(GRAY))),
+        Line::from(Span::styled(header, Style::default().fg(GRAY))),
         Line::from(""),
     ];
 
-    for (i, (_dir, label, hint)) in directions.iter().enumerate() {
-        let selected = i == app.mode_cursor;
-        let radio = if selected { "●" } else { "○" };
-        let style = if selected {
+    for (i, (dir, label, hint)) in directions.iter().enumerate() {
+        let is_cursor   = i == app.mode_cursor;
+        let is_selected = app.selected_directions.iter().any(|d| d == dir);
+        let check  = if is_selected { "[✓]" } else { "[ ]" };
+        let style = if is_cursor {
             Style::default().fg(CYAN).bg(BG2).add_modifier(Modifier::BOLD)
+        } else if is_selected {
+            Style::default().fg(CYAN)
         } else {
             Style::default().fg(GRAY)
         };
-        let prefix = if selected { "▶ " } else { "  " };
+        let prefix = if is_cursor { "▶ " } else { "  " };
         lines.push(Line::from(Span::styled(
-            format!("{}{} {}  — {}", prefix, radio, label, hint),
+            format!("{prefix}{check} {label}  — {hint}"),
             style,
         )));
     }
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  ↑↓ Navigate  •  Enter Select",
+        "  ↑↓/jk Navigate  •  Space Toggle  •  Enter Confirm",
         Style::default().fg(GRAY),
     )));
 
@@ -140,9 +151,15 @@ pub(super) fn render_content_select(f: &mut Frame, app: &App, area: Rect) {
     } else {
         (format!("  —  {} item(s) selected", selected_count), GRAY)
     };
+    let cram_span = if app.cram_mode {
+        Span::styled("  [CRAM]", Style::default().fg(ORANGE).add_modifier(Modifier::BOLD))
+    } else {
+        Span::styled("", Style::default())
+    };
     let title = Paragraph::new(Line::from(vec![
         Span::styled("Select Content", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(count_text, Style::default().fg(count_color)),
+        cram_span,
     ])).alignment(Alignment::Center);
     f.render_widget(title, chunks[0]);
 
@@ -187,7 +204,7 @@ pub(super) fn render_content_select(f: &mut Frame, app: &App, area: Rect) {
             .title(" Content "));
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 
-    let footer = Paragraph::new("↑↓/jk Navigate  •  Space Toggle  •  a Select all  •  n Deselect all  •  Enter Start  •  Esc Back")
+    let footer = Paragraph::new("↑↓/jk Navigate  •  Space Toggle  •  a All  •  n None  •  c Cram  •  r Refresh  •  Enter Start  •  Esc Back")
         .style(Style::default().fg(GRAY))
         .alignment(Alignment::Center);
     f.render_widget(footer, chunks[2]);
@@ -300,6 +317,60 @@ pub(super) fn render_about(f: &mut Frame, area: Rect) {
     f.render_widget(right, chunks[1]);
 }
 
+pub(super) fn render_suspended_words(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(6), Constraint::Length(2)])
+        .margin(2)
+        .split(area);
+
+    let suspended_count = app.suspended_words.len();
+    let title = Paragraph::new(Line::from(vec![
+        Span::styled("💤 Suspended Words", Style::default().fg(YELLOW).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("  —  {suspended_count} word(s)"),
+            Style::default().fg(GRAY),
+        ),
+    ])).alignment(Alignment::Center);
+    f.render_widget(title, chunks[0]);
+
+    if app.suspended_words.is_empty() {
+        let msg = Paragraph::new("No suspended words.")
+            .style(Style::default().fg(GRAY))
+            .alignment(Alignment::Center);
+        f.render_widget(msg, chunks[1]);
+    } else {
+        let items: Vec<ListItem> = app.suspended_words.iter().enumerate().map(|(i, w)| {
+            let selected = i == app.suspended_cursor;
+            let style = if selected {
+                Style::default().fg(CYAN).bg(BG2).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(WHITE)
+            };
+            let prefix = if selected { "▶ " } else { "  " };
+            let level_str = if w.level == 0 { "Other".to_string() } else { format!("HSK{}", w.level) };
+            let deck_str = if w.decks.is_empty() { String::new() } else { format!("  [{}]", w.decks.join(", ")) };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{prefix}{}  {}  {}  {}{}", w.hanzi, w.pinyin, w.english, level_str, deck_str), style),
+            ]))
+        }).collect();
+
+        let mut list_state = ratatui::widgets::ListState::default();
+        list_state.select(Some(app.suspended_cursor));
+        let list = List::new(items)
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(YELLOW)));
+        f.render_stateful_widget(list, chunks[1], &mut list_state);
+    }
+
+    let footer = Paragraph::new("↑↓/jk Navigate  •  Enter/u Unsuspend  •  Esc Back")
+        .style(Style::default().fg(GRAY))
+        .alignment(Alignment::Center);
+    f.render_widget(footer, chunks[2]);
+}
+
 pub(super) fn render_confirm(f: &mut Frame, action: &ClearAction, area: Rect) {
     let popup = centered_rect(55, 30, area);
     f.render_widget(Clear, popup);
@@ -307,7 +378,7 @@ pub(super) fn render_confirm(f: &mut Frame, action: &ClearAction, area: Rect) {
     let (title, warning, detail) = match action {
         ClearAction::CustomWords => (
             " 🗑️  Clear Custom Words ".to_string(),
-            "This will permanently delete all custom words and decks.".to_string(),
+            "Deletes all custom words, decks, and their review history.".to_string(),
             "HSK words and their progress are not affected.".to_string(),
         ),
         ClearAction::Progress => (

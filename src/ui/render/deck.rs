@@ -72,9 +72,13 @@ pub(super) fn render_add_to_deck(f: &mut Frame, app: &App, area: Rect) {
             .title(preview_title));
     f.render_widget(preview_list, panels[1]);
 
-    let input_border = if app.creating_new_deck { ACCENT } else { GRAY };
-    let input_title  = if app.creating_new_deck { " New Deck Name " } else { " New Deck Name (navigate to ＋) " };
-    let input_text   = if app.creating_new_deck { format!("{}█", app.deck_name_input) } else { String::new() };
+    let (input_border, input_title, input_text) = if app.creating_new_deck {
+        (ACCENT, " New Deck Name ", format!("{}█", app.deck_name_input))
+    } else if app.renaming_deck {
+        (YELLOW, " Rename Deck ", format!("{}█", app.deck_name_input))
+    } else {
+        (GRAY, " New Deck Name (navigate to ＋) ", String::new())
+    };
     let input_p = Paragraph::new(input_text)
         .block(Block::default().title(input_title).title_style(Style::default().fg(input_border))
             .borders(Borders::ALL).border_type(BorderType::Rounded)
@@ -84,8 +88,10 @@ pub(super) fn render_add_to_deck(f: &mut Frame, app: &App, area: Rect) {
 
     let footer = if app.creating_new_deck {
         "Type deck name  •  Enter Create & go to search  •  Esc Cancel"
+    } else if app.renaming_deck {
+        "Type new name  •  Enter Save  •  Esc Cancel"
     } else {
-        "↑↓/jk Navigate  •  Enter Select  •  d/Del Delete  •  Esc Back"
+        "↑↓/jk Navigate  •  Enter Select  •  r Rename  •  d/Del Delete  •  Esc Back"
     };
     f.render_widget(
         Paragraph::new(footer).style(Style::default().fg(GRAY)).alignment(Alignment::Center),
@@ -248,7 +254,7 @@ pub(super) fn render_add_custom_word(f: &mut Frame, app: &App, area: Rect) {
         ]);
         let line2 = Line::from(Span::styled(
             format!("    {}", e.english),
-            Style::default().fg(if selected { ratatui::style::Color::Rgb(200, 200, 200) } else { GRAY }).bg(bg),
+            Style::default().fg(if selected { WHITE } else { GRAY }).bg(bg),
         ));
         ListItem::new(vec![line1, line2])
     }).collect();

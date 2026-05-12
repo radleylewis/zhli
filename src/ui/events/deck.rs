@@ -6,7 +6,40 @@ use crate::ui::app_state::{App, ClearAction, Screen};
 use super::spawn_dict_lookup;
 
 pub(super) fn handle_add_to_deck(app: &mut App, code: KeyCode) -> Result<()> {
-    if app.creating_new_deck {
+    if app.renaming_deck {
+        match code {
+            KeyCode::Esc => {
+                app.renaming_deck = false;
+                app.deck_name_input.clear();
+            }
+            KeyCode::Backspace => { app.deck_name_input.pop(); }
+            KeyCode::Enter => {
+                let new_name = app.deck_name_input.trim().to_string();
+                if !new_name.is_empty() {
+                    let old_name = app.available_decks
+                        .get(app.deck_cursor.saturating_sub(1))
+                        .cloned()
+                        .unwrap_or_default();
+                    match app.db.rename_deck(&old_name, &new_name) {
+                        Ok(()) => {
+                            app.renaming_deck = false;
+                            app.deck_name_input.clear();
+                            if let Err(e) = app.load_decks() {
+                                app.status_message = format!("Error reloading decks: {e}");
+                            } else {
+                                app.refresh_content_items();
+                                app.status_message = format!("Renamed '{old_name}' → '{new_name}'.");
+                            }
+                        }
+                        Err(e) => { app.status_message = e.to_string(); }
+                    }
+                    app.status_set_at = Some(Instant::now());
+                }
+            }
+            KeyCode::Char(c) if app.deck_name_input.len() < 64 => { app.deck_name_input.push(c); }
+            _ => {}
+        }
+    } else if app.creating_new_deck {
         match code {
             KeyCode::Esc => {
                 app.creating_new_deck = false;
@@ -24,6 +57,7 @@ pub(super) fn handle_add_to_deck(app: &mut App, code: KeyCode) -> Result<()> {
                                 app.status_message = format!("Error loading decks: {e}");
                                 app.status_set_at = Some(Instant::now());
                             }
+                            app.refresh_content_items();
                             app.search_query.clear();
                             app.search_results.clear();
                             app.screen = Screen::SearchDeck;
@@ -71,6 +105,12 @@ pub(super) fn handle_add_to_deck(app: &mut App, code: KeyCode) -> Result<()> {
                     app.search_query.clear();
                     app.search_results.clear();
                     app.screen = Screen::SearchDeck;
+                }
+            }
+            KeyCode::Char('r') if app.deck_cursor > 0 => {
+                if let Some(name) = app.available_decks.get(app.deck_cursor - 1) {
+                    app.deck_name_input = name.clone();
+                    app.renaming_deck = true;
                 }
             }
             KeyCode::Char('d') | KeyCode::Delete

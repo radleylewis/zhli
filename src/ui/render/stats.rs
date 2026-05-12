@@ -39,7 +39,7 @@ pub(super) fn render_stats(f: &mut Frame, app: &App, area: Rect) {
         .split(chunks[0]);
 
     let retention = if stats.total_reviews > 0 {
-        (stats.avg_grade / 5.0 * 100.0) as u16
+        (stats.avg_grade / 5.0 * 100.0).round() as u16
     } else { 0 };
 
     let kv = vec![

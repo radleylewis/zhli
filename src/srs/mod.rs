@@ -46,7 +46,17 @@ impl CardDirection {
             "zh_to_en"     => Self::ZhToEn,
             "en_to_zh"     => Self::EnToZh,
             "pinyin_to_zh" => Self::PinyinToZh,
-            _              => Self::PinyinToZh, // should never occur; all values written via as_str()
+            _              => Self::PinyinToZh,
+        }
+    }
+
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s.trim() {
+            "zh_to_pinyin" => Some(Self::ZhToPinyin),
+            "zh_to_en"     => Some(Self::ZhToEn),
+            "en_to_zh"     => Some(Self::EnToZh),
+            "pinyin_to_zh" => Some(Self::PinyinToZh),
+            _              => None,
         }
     }
 
@@ -118,15 +128,15 @@ pub fn sm2_schedule(card: &CardRow, grade: ReviewGrade) -> Sm2Result {
 /// Pinyin grading helpers
 pub fn strip_tones(pinyin: &str) -> String {
     let toned = "āáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜ";
-    let base   = "aaaaeeeeiiiioooouuuuuuuu";
+    let base   = "aaaaeeeeiiiioooouuuuüüüü";
     let base_chars: Vec<char> = base.chars().collect();
     let mut out = String::new();
     for ch in pinyin.chars() {
         if let Some(idx) = toned.chars().position(|t| t == ch) {
             out.push(base_chars[idx]);
         } else if ch == 'ü' || ch == 'v' {
-            // plain ü (from v→ü conversion) and bare 'v' both normalise to 'u'
-            out.push('u');
+            // ü and keyboard substitute 'v' both normalise to ü (distinct from u)
+            out.push('ü');
         } else {
             out.push(ch.to_ascii_lowercase());
         }
@@ -257,7 +267,7 @@ pub fn grade_answer(direction: &CardDirection, card: &CardRow, answer: &str) -> 
 
             if variants.iter().any(|v| v == &given) {
                 (1.0, "✓ Correct!".to_string())
-            } else if !given.is_empty() && given.len() > 2
+            } else if !given.is_empty()
                 && variants.iter().any(|v| v.contains(given.as_str()) || given.contains(v.as_str()))
             {
                 (0.6, "~ Partially correct".to_string())

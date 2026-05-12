@@ -152,8 +152,7 @@ pub(super) fn render_review(f: &mut Frame, app: &App, area: Rect) {
     // Answer / grading area
     match app.review_phase {
         ReviewPhase::Prompt => {
-            let is_pinyin_dir = matches!(direction, CardDirection::ZhToPinyin | CardDirection::PinyinToZh);
-            if is_pinyin_dir {
+            if matches!(direction, CardDirection::ZhToPinyin) {
                 render_tone_legend(f, chunks[4]);
             } else {
                 let hint = Paragraph::new("Type your answer and press Enter to check")
@@ -267,31 +266,62 @@ fn render_answer_panel(f: &mut Frame, app: &App, card: &crate::db::CardRow, area
 }
 
 fn render_session_complete(f: &mut Frame, app: &App, area: Rect) {
-    let popup = centered_rect(60, 50, area);
+    let popup = centered_rect(60, 55, area);
     f.render_widget(Clear, popup);
 
     let accuracy = if app.session_total > 0 {
         app.session_correct * 100 / app.session_total
     } else { 0 };
+    let wrong = app.session_total.saturating_sub(app.session_correct);
 
-    let lines = vec![
+    let elapsed = app.session_start.map(|s| {
+        let secs = s.elapsed().as_secs();
+        if secs >= 60 { format!("{}m {}s", secs / 60, secs % 60) } else { format!("{secs}s") }
+    }).unwrap_or_default();
+
+    let border_color = if accuracy >= 80 { GREEN } else if accuracy >= 50 { YELLOW } else { RED };
+
+    let mut lines = vec![
         Line::from(""),
-        Line::from(Span::styled("  🎉 Session Complete!", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "  Session Complete",
+            Style::default().fg(border_color).add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
-        Line::from(Span::styled(format!("  Cards reviewed: {}", app.session_total), Style::default().fg(WHITE))),
-        Line::from(Span::styled(format!("  Correct:        {} ({}%)", app.session_correct, accuracy), Style::default().fg(CYAN))),
-        Line::from(""),
-        Line::from(Span::styled("  No more cards due right now.", Style::default().fg(GRAY))),
-        Line::from(Span::styled("  Come back later for the next review.", Style::default().fg(GRAY))),
-        Line::from(""),
-        Line::from(Span::styled("  Press Esc / Enter / Q to return to menu", Style::default().fg(GRAY))),
+        Line::from(vec![
+            Span::styled("  Reviewed:  ", Style::default().fg(GRAY)),
+            Span::styled(app.session_total.to_string(), Style::default().fg(WHITE).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Correct:   ", Style::default().fg(GRAY)),
+            Span::styled(
+                format!("{} ({}%)", app.session_correct, accuracy),
+                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Incorrect: ", Style::default().fg(GRAY)),
+            Span::styled(wrong.to_string(), Style::default().fg(if wrong > 0 { RED } else { GRAY })),
+        ]),
     ];
+
+    if !elapsed.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Time:      ", Style::default().fg(GRAY)),
+            Span::styled(elapsed, Style::default().fg(CYAN)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  No more cards due — come back later.", Style::default().fg(GRAY))));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  Esc / Enter / Q  return to menu", Style::default().fg(GRAY))));
 
     let p = Paragraph::new(lines)
         .block(Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(GREEN))
+            .border_style(Style::default().fg(border_color))
             .title(" Done ")
             .style(Style::default().bg(BG)));
     f.render_widget(p, popup);

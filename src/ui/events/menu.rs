@@ -2,7 +2,7 @@ use anyhow::Result;
 use crossterm::event::KeyCode;
 use std::time::Instant;
 
-use crate::ui::app_state::{App, ClearAction, ContentItem, ContentKind, Screen};
+use crate::ui::app_state::{App, ClearAction, Screen};
 use crate::srs::CardDirection;
 
 pub(super) fn handle_main_menu(app: &mut App, code: KeyCode) -> bool {
@@ -10,10 +10,10 @@ pub(super) fn handle_main_menu(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Up | KeyCode::Char('k')
             if app.menu_cursor > 0 => { app.menu_cursor -= 1; }
         KeyCode::Down | KeyCode::Char('j')
-            if app.menu_cursor < 7 => { app.menu_cursor += 1; }
+            if app.menu_cursor < 8 => { app.menu_cursor += 1; }
         KeyCode::Char('g')
             if app.last_char == Some('g') => { app.menu_cursor = 0; }
-        KeyCode::Char('G') => { app.menu_cursor = 7; }
+        KeyCode::Char('G') => { app.menu_cursor = 8; }
         KeyCode::Enter => {
             match app.menu_cursor {
                 0 => { app.screen = Screen::ModeSelect; }
@@ -31,6 +31,7 @@ pub(super) fn handle_main_menu(app: &mut App, code: KeyCode) -> bool {
                     }
                     app.deck_name_input.clear();
                     app.creating_new_deck = false;
+                    app.renaming_deck = false;
                     app.screen = Screen::AddToDeck;
                 }
                 3 => {
@@ -38,10 +39,23 @@ pub(super) fn handle_main_menu(app: &mut App, code: KeyCode) -> bool {
                     app.search_results.clear();
                     app.screen = Screen::SearchDeck;
                 }
-                4 => { app.screen = Screen::About; }
-                5 => { app.screen = Screen::Confirm(ClearAction::CustomWords); }
-                6 => { app.screen = Screen::Confirm(ClearAction::Progress); }
-                7 => { return true; }
+                4 => {
+                    match app.db.suspended_words() {
+                        Ok(words) => {
+                            app.suspended_words = words;
+                            app.suspended_cursor = 0;
+                            app.screen = Screen::SuspendedWords;
+                        }
+                        Err(e) => {
+                            app.status_message = format!("Failed to load: {e}");
+                            app.status_set_at = Some(Instant::now());
+                        }
+                    }
+                }
+                5 => { app.screen = Screen::About; }
+                6 => { app.screen = Screen::Confirm(ClearAction::CustomWords); }
+                7 => { app.screen = Screen::Confirm(ClearAction::Progress); }
+                8 => { return true; }
                 _ => {}
             }
         }
@@ -49,6 +63,44 @@ pub(super) fn handle_main_menu(app: &mut App, code: KeyCode) -> bool {
         _ => {}
     }
     false
+}
+
+pub(super) fn handle_suspended_words(app: &mut App, code: KeyCode) -> Result<()> {
+    let n = app.suspended_words.len();
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => { app.screen = Screen::MainMenu; }
+        KeyCode::Up | KeyCode::Char('k') if app.suspended_cursor > 0 => {
+            app.suspended_cursor -= 1;
+        }
+        KeyCode::Down | KeyCode::Char('j') if app.suspended_cursor + 1 < n => {
+            app.suspended_cursor += 1;
+        }
+        KeyCode::Char('g') if app.last_char == Some('g') => { app.suspended_cursor = 0; }
+        KeyCode::Char('G') if n > 0 => { app.suspended_cursor = n - 1; }
+        KeyCode::Enter | KeyCode::Char('u') => {
+            if let Some(word) = app.suspended_words.get(app.suspended_cursor) {
+                let id    = word.id;
+                let hanzi = word.hanzi.clone();
+                match app.db.unsuspend_word(id) {
+                    Ok(()) => {
+                        app.suspended_words.remove(app.suspended_cursor);
+                        if app.suspended_cursor > 0
+                            && app.suspended_cursor >= app.suspended_words.len()
+                        {
+                            app.suspended_cursor -= 1;
+                        }
+                        app.status_message = format!("Unsuspended '{hanzi}'.");
+                    }
+                    Err(e) => {
+                        app.status_message = format!("Error: {e}");
+                    }
+                }
+                app.status_set_at = Some(Instant::now());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 pub(super) fn handle_mode_select(app: &mut App, code: KeyCode) {
@@ -66,30 +118,21 @@ pub(super) fn handle_mode_select(app: &mut App, code: KeyCode) {
         KeyCode::Char('g')
             if app.last_char == Some('g') => { app.mode_cursor = 0; }
         KeyCode::Char('G') => { app.mode_cursor = 3; }
+        KeyCode::Char(' ') => {
+            let dir = directions[app.mode_cursor].clone();
+            if let Some(pos) = app.selected_directions.iter().position(|d| d == &dir) {
+                app.selected_directions.remove(pos);
+            } else {
+                app.selected_directions.push(dir);
+            }
+            app.save_study_settings();
+        }
+        KeyCode::Enter if app.selected_directions.is_empty() => {
+            app.status_message = "Select at least one mode (Space to toggle).".to_string();
+            app.status_set_at = Some(Instant::now());
+        }
         KeyCode::Enter => {
-            app.selected_directions = vec![directions[app.mode_cursor].clone()];
-            let decks = app.db.list_decks().unwrap_or_default();
-            let old_hsk: Vec<(u8, bool)> = app.content_items.iter()
-                .filter_map(|it| if let ContentKind::Hsk(l) = it.kind { Some((l, it.selected)) } else { None })
-                .collect();
-            let old_decks: Vec<(String, bool)> = app.content_items.iter()
-                .filter_map(|it| if let ContentKind::Deck(d) = &it.kind { Some((d.clone(), it.selected)) } else { None })
-                .collect();
-            let saved_deck_sel: Vec<String> = app.db.load_setting("selected_decks").ok().flatten()
-                .map(|v| v.split('\x1F').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect())
-                .unwrap_or_default();
-            app.content_items = (1u8..=6)
-                .map(|l| {
-                    let sel = old_hsk.iter().find(|(level, _)| *level == l).map(|(_, s)| *s).unwrap_or(true);
-                    ContentItem { kind: ContentKind::Hsk(l), selected: sel }
-                })
-                .chain(decks.into_iter().map(|d| {
-                    let sel = old_decks.iter().find(|(name, _)| name == &d)
-                        .map(|(_, s)| *s)
-                        .unwrap_or_else(|| saved_deck_sel.contains(&d));
-                    ContentItem { kind: ContentKind::Deck(d), selected: sel }
-                }))
-                .collect();
+            app.refresh_content_items();
             app.content_cursor = 0;
             app.save_study_settings();
             app.screen = Screen::ContentSelect;
@@ -124,6 +167,10 @@ pub(super) fn handle_content_select(app: &mut App, code: KeyCode) -> Result<()> 
             for item in &mut app.content_items { item.selected = false; }
             app.save_study_settings();
         }
+        KeyCode::Char('r') => { app.refresh_content_items(); }
+        KeyCode::Char('c') => {
+            app.cram_mode = !app.cram_mode;
+        }
         KeyCode::Enter
             if app.content_items.iter().any(|i| i.selected) => {
                 match app.load_review_session() {
@@ -131,6 +178,7 @@ pub(super) fn handle_content_select(app: &mut App, code: KeyCode) -> Result<()> 
                         if app.review_queue.is_empty() {
                             app.status_message = "No cards due — all caught up!".to_string();
                             app.status_set_at = Some(Instant::now());
+                            app.screen = Screen::MainMenu;
                         } else {
                             app.screen = Screen::Review;
                         }

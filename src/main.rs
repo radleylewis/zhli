@@ -55,6 +55,14 @@ fn main() -> Result<()> {
             app.status_set_at = None;
         }
 
+        if app.dict_rx.is_some()
+            && app.dict_lookup_started.map(|s| s.elapsed().as_secs() > 15).unwrap_or(false)
+        {
+            app.dict_rx = None;
+            app.dict_lookup_started = None;
+            app.dict_status = "Search timed out — press Enter to retry.".to_string();
+        }
+
         let dict_done = if let Some(rx) = &app.dict_rx {
             rx.try_recv().ok()
         } else {
@@ -62,6 +70,7 @@ fn main() -> Result<()> {
         };
         if let Some(result) = dict_done {
             app.dict_rx = None;
+            app.dict_lookup_started = None;
             let searched_query = app.dict_query.clone();
             match result {
                 Ok(results) => {

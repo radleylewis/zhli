@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::{Connection, params, params_from_iter, types::Value, OptionalExtension};
+use rusqlite::{Connection, OpenFlags, params, params_from_iter, types::Value, OptionalExtension};
 use chrono::Utc;
 
 use crate::srs::{CardDirection};
@@ -13,13 +13,26 @@ impl Database {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(path)?;
+        // Use nolock=1 so the DB opens on 9p/Windows filesystems (WSL2 /mnt/* drives)
+        // where POSIX fcntl locking is unsupported and returns ENXIO.
+        let uri = format!("file:{}?nolock=1", path.display());
+        let conn = Connection::open_with_flags(
+            uri,
+            OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE,
+        )?;
         let db = Database { conn };
         db.migrate()?;
         Ok(db)
     }
 
     fn migrate(&self) -> Result<()> {
+        let schema_version: i64 = self.conn.query_row(
+            "PRAGMA user_version", [], |r| r.get(0),
+        )?;
+
+        // Idempotent: ensure tables and indexes exist on every open.
         self.conn.execute_batch("
             PRAGMA journal_mode=DELETE;
             PRAGMA foreign_keys=ON;
@@ -41,7 +54,6 @@ impl Database {
                 interval_days REAL NOT NULL DEFAULT 0,
                 repetitions   INTEGER NOT NULL DEFAULT 0,
                 due_at        TEXT NOT NULL,
-                last_grade    INTEGER,
                 created_at    TEXT NOT NULL,
                 suspended     INTEGER NOT NULL DEFAULT 0
             );
@@ -70,41 +82,50 @@ impl Database {
                 PRIMARY KEY (word_id, deck_name)
             );
 
-            INSERT OR IGNORE INTO word_deck_memberships (word_id, deck_name)
-                SELECT id, custom_deck FROM words
-                WHERE custom_deck IS NOT NULL AND custom_deck != '';
-
-            DELETE FROM reviews WHERE card_id IN (
-                SELECT id FROM cards WHERE id NOT IN (
-                    SELECT MIN(id) FROM cards GROUP BY word_id, direction
-                )
-            );
-            DELETE FROM cards WHERE id NOT IN (
-                SELECT MIN(id) FROM cards GROUP BY word_id, direction
-            );
-
             CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_word_dir
                 ON cards(word_id, direction);
-
-            DELETE FROM reviews WHERE card_id IN (
-                SELECT c.id FROM cards c WHERE c.word_id IN (
-                    SELECT id FROM words WHERE id NOT IN (
-                        SELECT MIN(id) FROM words GROUP BY hanzi, pinyin
-                    )
-                )
-            );
-            DELETE FROM cards WHERE word_id IN (
-                SELECT id FROM words WHERE id NOT IN (
-                    SELECT MIN(id) FROM words GROUP BY hanzi, pinyin
-                )
-            );
-            DELETE FROM words WHERE id NOT IN (
-                SELECT MIN(id) FROM words GROUP BY hanzi, pinyin
-            );
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_words_hanzi_pinyin
                 ON words(hanzi, pinyin);
         ")?;
+
+        if schema_version < 1 {
+            // One-time: backfill word_deck_memberships from legacy custom_deck column
+            // and deduplicate rows created before the unique indexes existed.
+            self.conn.execute_batch("
+                INSERT OR IGNORE INTO word_deck_memberships (word_id, deck_name)
+                    SELECT id, custom_deck FROM words
+                    WHERE custom_deck IS NOT NULL AND custom_deck != '';
+
+                DELETE FROM reviews WHERE card_id IN (
+                    SELECT id FROM cards WHERE id NOT IN (
+                        SELECT MIN(id) FROM cards GROUP BY word_id, direction
+                    )
+                );
+                DELETE FROM cards WHERE id NOT IN (
+                    SELECT MIN(id) FROM cards GROUP BY word_id, direction
+                );
+
+                DELETE FROM reviews WHERE card_id IN (
+                    SELECT c.id FROM cards c WHERE c.word_id IN (
+                        SELECT id FROM words WHERE id NOT IN (
+                            SELECT MIN(id) FROM words GROUP BY hanzi, pinyin
+                        )
+                    )
+                );
+                DELETE FROM cards WHERE word_id IN (
+                    SELECT id FROM words WHERE id NOT IN (
+                        SELECT MIN(id) FROM words GROUP BY hanzi, pinyin
+                    )
+                );
+                DELETE FROM words WHERE id NOT IN (
+                    SELECT MIN(id) FROM words GROUP BY hanzi, pinyin
+                );
+
+                PRAGMA user_version = 1;
+            ")?;
+        }
+
         Ok(())
     }
 
@@ -153,6 +174,7 @@ impl Database {
         selected_decks: &[&str],
         directions: &[CardDirection],
         limit: usize,
+        cram: bool,
     ) -> Result<Vec<CardRow>> {
         if selected_levels.is_empty() && selected_decks.is_empty() {
             return Ok(vec![]);
@@ -167,9 +189,12 @@ impl Database {
             for &l in selected_levels {
                 params.push(Value::Integer(i64::from(l)));
             }
-            params.push(Value::Text(now));
-            // HSK words: apply SRS due-date filter.
-            conditions.push(format!("(w.level IN ({ph}) AND c.due_at <= ?)"));
+            if cram {
+                conditions.push(format!("(w.level IN ({ph}))"));
+            } else {
+                params.push(Value::Text(now));
+                conditions.push(format!("(w.level IN ({ph}) AND c.due_at <= ?)"));
+            }
         }
 
         for &deck in selected_decks {
@@ -575,6 +600,44 @@ impl Database {
         self.conn.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
             params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn suspended_words(&self) -> Result<Vec<WordRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT w.id, w.hanzi, w.pinyin, w.english, w.level,
+                    (SELECT GROUP_CONCAT(wdm.deck_name, char(31))
+                     FROM word_deck_memberships wdm
+                     WHERE wdm.word_id = w.id
+                     ORDER BY wdm.deck_name),
+                    1
+             FROM words w
+             JOIN cards c ON c.word_id = w.id
+             WHERE c.suspended = 1
+             ORDER BY w.level, w.hanzi"
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let deck_list: Option<String> = r.get(5)?;
+            Ok(WordRow {
+                id: r.get(0)?, hanzi: r.get(1)?, pinyin: r.get(2)?,
+                english: r.get(3)?, level: r.get(4)?,
+                decks: deck_list.map(|s| s.split('\x1F').map(|d| d.to_string()).collect())
+                                 .unwrap_or_default(),
+                suspended: true,
+            })
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn rename_deck(&self, old_name: &str, new_name: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE custom_decks SET name = ?1 WHERE name = ?2",
+            params![new_name, old_name],
+        )?;
+        self.conn.execute(
+            "UPDATE word_deck_memberships SET deck_name = ?1 WHERE deck_name = ?2",
+            params![new_name, old_name],
         )?;
         Ok(())
     }

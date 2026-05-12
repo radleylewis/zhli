@@ -24,6 +24,7 @@ pub enum Screen {
     SearchDeck,
     EditWord,
     About,
+    SuspendedWords,
     Confirm(ClearAction),
 }
 
@@ -53,6 +54,7 @@ pub struct App {
     // Content selection (HSK levels + custom decks)
     pub content_items: Vec<ContentItem>,
     pub content_cursor: usize,
+    pub session_start: Option<Instant>,
     // Review state
     pub review_queue: Vec<CardRow>,
     pub current_card_idx: usize,
@@ -104,37 +106,61 @@ pub struct App {
     pub should_suspend: bool,
     // Edit word screen state
     pub edit_word_id: i64,
-    pub edit_field: usize,         // 0 = hanzi, 1 = pinyin, 2 = english
+    pub edit_field: usize,
     pub edit_bufs: [String; 3],
+    // Cram mode (ignore due-date filter for HSK levels)
+    pub cram_mode: bool,
+    // Deck rename
+    pub renaming_deck: bool,
+    // Dict lookup timeout
+    pub dict_lookup_started: Option<Instant>,
+    // Suspended words screen
+    pub suspended_words: Vec<crate::db::WordRow>,
+    pub suspended_cursor: usize,
 }
 
 impl App {
     pub fn new(db: Database, session_limit: usize) -> Self {
-        // Load persisted mode cursor
         let mode_cursor = db.load_setting("mode_cursor").ok().flatten()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(0)
             .min(3);
 
-        // Restore selected directions from saved mode
         let all_directions = [
             CardDirection::ZhToPinyin,
             CardDirection::ZhToEn,
             CardDirection::EnToZh,
             CardDirection::PinyinToZh,
         ];
-        let selected_directions = vec![all_directions[mode_cursor].clone()];
 
-        // Load persisted selected levels (comma-separated, e.g. "1,2,3")
+        // Restore selected directions; fall back to the mode_cursor direction.
+        let selected_directions: Vec<CardDirection> = db.load_setting("selected_directions")
+            .ok().flatten()
+            .map(|v| v.split(',')
+                .filter_map(|s| CardDirection::from_str_opt(s.trim()))
+                .collect::<Vec<_>>())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| vec![all_directions[mode_cursor].clone()]);
+
         let saved_levels: Vec<u8> = db.load_setting("selected_levels").ok().flatten()
             .map(|v| v.split(',').filter_map(|s| s.parse().ok()).collect())
             .unwrap_or_else(|| (1u8..=6).collect());
+
+        let saved_deck_sel: Vec<String> = db.load_setting("selected_decks").ok().flatten()
+            .map(|v| v.split('\x1F').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect())
+            .unwrap_or_default();
+
+        let decks = db.list_decks().unwrap_or_default();
 
         let content_items = (1u8..=6)
             .map(|l| ContentItem {
                 kind: ContentKind::Hsk(l),
                 selected: saved_levels.contains(&l),
             })
+            .chain(decks.into_iter().map(|d| {
+                let selected = saved_deck_sel.contains(&d);
+                ContentItem { kind: ContentKind::Deck(d), selected }
+            }))
             .collect();
 
         Self {
@@ -143,6 +169,7 @@ impl App {
             selected_directions,
             content_items,
             content_cursor: 0,
+            session_start: None,
             review_queue: vec![],
             current_card_idx: 0,
             review_phase: ReviewPhase::Prompt,
@@ -183,11 +210,21 @@ impl App {
             edit_field: 0,
             edit_bufs: [String::new(), String::new(), String::new()],
             should_suspend: false,
+            cram_mode: false,
+            renaming_deck: false,
+            dict_lookup_started: None,
+            suspended_words: vec![],
+            suspended_cursor: 0,
         }
     }
 
     pub fn save_study_settings(&self) {
         let _ = self.db.save_setting("mode_cursor", &self.mode_cursor.to_string());
+        let dirs: String = self.selected_directions.iter()
+            .map(|d| d.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let _ = self.db.save_setting("selected_directions", &dirs);
         let levels: String = self.content_items.iter()
             .filter(|i| i.selected)
             .filter_map(|i| if let ContentKind::Hsk(l) = i.kind { Some(l.to_string()) } else { None })
@@ -217,6 +254,7 @@ impl App {
             &selected_decks,
             &self.selected_directions,
             self.session_limit,
+            self.cram_mode,
         )?;
         // Shuffle for variety
         use rand::seq::SliceRandom;
@@ -227,6 +265,7 @@ impl App {
         self.input_buffer.clear();
         self.session_correct = 0;
         self.session_total = 0;
+        self.session_start = Some(Instant::now());
         self.card_start = Some(Instant::now());
         Ok(())
     }
@@ -281,6 +320,26 @@ impl App {
         self.deck_cursor = 0;
         self.deck_preview.clear();
         Ok(())
+    }
+
+    pub fn refresh_content_items(&mut self) {
+        let decks = self.db.list_decks().unwrap_or_default();
+        let old_hsk: Vec<(u8, bool)> = self.content_items.iter()
+            .filter_map(|it| if let ContentKind::Hsk(l) = it.kind { Some((l, it.selected)) } else { None })
+            .collect();
+        let old_decks: Vec<(String, bool)> = self.content_items.iter()
+            .filter_map(|it| if let ContentKind::Deck(d) = &it.kind { Some((d.clone(), it.selected)) } else { None })
+            .collect();
+        self.content_items = (1u8..=6)
+            .map(|l| {
+                let sel = old_hsk.iter().find(|(level, _)| *level == l).map(|(_, s)| *s).unwrap_or(true);
+                ContentItem { kind: ContentKind::Hsk(l), selected: sel }
+            })
+            .chain(decks.into_iter().map(|d| {
+                let sel = old_decks.iter().find(|(name, _)| name == &d).map(|(_, s)| *s).unwrap_or(false);
+                ContentItem { kind: ContentKind::Deck(d), selected: sel }
+            }))
+            .collect();
     }
 
     pub fn load_deck_preview(&mut self) -> Result<()> {
