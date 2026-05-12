@@ -2203,6 +2203,7 @@ dependencies = [
  "chrono",
  "crossterm",
  "dirs",
+ "libc",
  "open",
  "rand",
  "ratatui",

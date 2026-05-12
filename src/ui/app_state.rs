@@ -101,6 +101,7 @@ pub struct App {
     pub stats_scroll: usize,
     // Session configuration
     pub session_limit: usize,
+    pub should_suspend: bool,
     // Edit word screen state
     pub edit_word_id: i64,
     pub edit_field: usize,         // 0 = hanzi, 1 = pinyin, 2 = english
@@ -181,6 +182,7 @@ impl App {
             edit_word_id: 0,
             edit_field: 0,
             edit_bufs: [String::new(), String::new(), String::new()],
+            should_suspend: false,
         }
     }
 

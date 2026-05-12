@@ -10,14 +10,14 @@ use std::sync::mpsc;
 use crate::ui::app_state::{App, Screen};
 use crate::srs::ReviewGrade;
 
-pub(crate) fn apply_grade(app: &mut App, grade: ReviewGrade) {
+pub(super) fn apply_grade(app: &mut App, grade: ReviewGrade) {
     if let Err(e) = app.apply_grade(grade) {
         app.status_message = format!("Error saving grade: {e}");
         app.status_set_at = Some(Instant::now());
     }
 }
 
-pub(crate) fn spawn_dict_lookup(app: &mut App) {
+pub(super) fn spawn_dict_lookup(app: &mut App) {
     let (tx, rx) = mpsc::channel();
     app.dict_rx = Some(rx);
     let query = app.dict_query.clone();
@@ -32,6 +32,11 @@ pub fn handle_event(app: &mut App, event: Event) -> Result<bool> {
 
     if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
         return Ok(true);
+    }
+
+    if code == KeyCode::Char('z') && modifiers.contains(KeyModifiers::CONTROL) {
+        app.should_suspend = true;
+        return Ok(false);
     }
 
     if app.cmd_buffer.is_some() {

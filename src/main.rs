@@ -5,6 +5,9 @@ mod dict;
 mod srs;
 mod ui;
 
+#[cfg(unix)]
+extern crate libc;
+
 use anyhow::Result;
 use crossterm::{
     event,
@@ -35,6 +38,18 @@ fn main() -> Result<()> {
     let mut app = App::new(db, cfg.session_limit);
 
     loop {
+        if app.should_suspend {
+            app.should_suspend = false;
+            disable_raw_mode()?;
+            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+            terminal.show_cursor()?;
+            #[cfg(unix)]
+            unsafe { libc::raise(libc::SIGTSTP); }
+            enable_raw_mode()?;
+            execute!(io::stdout(), EnterAlternateScreen)?;
+            terminal.clear()?;
+        }
+
         if app.status_set_at.map(|t| t.elapsed().as_secs() >= 3).unwrap_or(false) {
             app.status_message.clear();
             app.status_set_at = None;

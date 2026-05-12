@@ -21,7 +21,7 @@ impl Database {
 
     fn migrate(&self) -> Result<()> {
         self.conn.execute_batch("
-            PRAGMA journal_mode=WAL;
+            PRAGMA journal_mode=DELETE;
             PRAGMA foreign_keys=ON;
 
             CREATE TABLE IF NOT EXISTS words (
@@ -119,7 +119,7 @@ impl Database {
             "INSERT OR IGNORE INTO words (hanzi, pinyin, english, level) VALUES (?1,?2,?3,?4)"
         )?;
 
-        for (hanzi, pinyin, english, level) in crate::data::hsk_words::HSK_WORDS {
+        for &(hanzi, pinyin, english, level) in crate::data::hsk_words::HSK_WORDS.iter() {
             stmt.execute(params![hanzi, pinyin, english, level])?;
         }
 
@@ -359,6 +359,7 @@ impl Database {
                 );
             DELETE FROM cards WHERE word_id IN (SELECT id FROM words WHERE level = 0);
             DELETE FROM words WHERE level = 0;
+            DELETE FROM word_deck_memberships WHERE deck_name IN (SELECT name FROM custom_decks);
             DELETE FROM custom_decks;
         ")?;
         Ok(())

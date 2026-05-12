@@ -21,5 +21,8 @@ rand = "0.8"
 unicode-width = "0.1"
 arboard = "3"
 open = "5"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 ureq = "2"
 scraper = "0.21"

@@ -60,7 +60,7 @@ pub(super) fn handle_add_to_deck(app: &mut App, code: KeyCode) -> Result<()> {
                 }
             KeyCode::Char('G') => {
                 app.deck_cursor = max_cursor;
-                let _ = app.load_deck_preview();
+                app.load_deck_preview()?;
             }
             KeyCode::Enter => {
                 if app.deck_cursor == 0 {
