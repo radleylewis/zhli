@@ -117,6 +117,8 @@ pub struct App {
     // Suspended words screen
     pub suspended_words: Vec<crate::db::WordRow>,
     pub suspended_cursor: usize,
+    // Activity heatmap (ISO date → review count)
+    pub heatmap: std::collections::HashMap<String, i64>,
 }
 
 impl App {
@@ -151,6 +153,7 @@ impl App {
             .unwrap_or_default();
 
         let decks = db.list_decks().unwrap_or_default();
+        let heatmap = db.heatmap_data(84).unwrap_or_default();
 
         let content_items = (1u8..=6)
             .map(|l| ContentItem {
@@ -215,7 +218,12 @@ impl App {
             dict_lookup_started: None,
             suspended_words: vec![],
             suspended_cursor: 0,
+            heatmap,
         }
+    }
+
+    pub fn refresh_heatmap(&mut self) {
+        self.heatmap = self.db.heatmap_data(84).unwrap_or_default();
     }
 
     pub fn save_study_settings(&self) {

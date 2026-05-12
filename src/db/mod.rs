@@ -9,6 +9,14 @@ pub struct Database {
 }
 
 impl Database {
+    #[cfg(test)]
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        let db = Database { conn };
+        db.migrate()?;
+        Ok(db)
+    }
+
     pub fn open(path: &std::path::Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -642,6 +650,25 @@ impl Database {
         Ok(())
     }
 
+    pub fn heatmap_data(&self, days: u32) -> Result<std::collections::HashMap<String, i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT substr(reviewed_at, 1, 10) as day, COUNT(*) as cnt
+             FROM reviews
+             WHERE date(reviewed_at) >= date('now', ?1)
+             GROUP BY day"
+        )?;
+        let arg = format!("-{days} days");
+        let rows = stmt.query_map(params![arg], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let (day, cnt) = row?;
+            map.insert(day, cnt);
+        }
+        Ok(map)
+    }
+
     pub fn load_setting(&self, key: &str) -> Result<Option<String>> {
         match self.conn.query_row(
             "SELECT value FROM settings WHERE key = ?1",
@@ -716,4 +743,346 @@ pub struct WeakCard {
     pub hanzi: String,
     pub pinyin: String,
     pub ease_factor: f64,
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn db() -> Database { Database::open_in_memory().expect("in-memory db") }
+
+    fn add_word(db: &Database, hanzi: &str, pinyin: &str, english: &str) -> i64 {
+        db.add_custom_word(hanzi, pinyin, english, 0, None).unwrap();
+        db.conn.query_row(
+            "SELECT id FROM words WHERE hanzi = ?1 AND pinyin = ?2",
+            params![hanzi, pinyin], |r| r.get(0),
+        ).unwrap()
+    }
+
+    fn push_all_due_dates(db: &Database, word_id: i64) {
+        db.conn.execute(
+            "UPDATE cards SET due_at = datetime('now', '+30 days') WHERE word_id = ?1",
+            params![word_id],
+        ).unwrap();
+    }
+
+    // ── Schema ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn migrate_creates_all_tables() {
+        let db = db();
+        let tables: Vec<String> = {
+            let mut s = db.conn.prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).unwrap();
+            s.query_map([], |r| r.get(0)).unwrap()
+             .collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        for t in &["cards", "custom_decks", "reviews", "settings", "word_deck_memberships", "words"] {
+            assert!(tables.iter().any(|n| n == t), "missing table: {t}");
+        }
+    }
+
+    #[test]
+    fn schema_version_set_after_migration() {
+        let db = db();
+        let v: i64 = db.conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 1);
+    }
+
+    // ── Settings ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn settings_round_trip() {
+        let db = db();
+        assert_eq!(db.load_setting("foo").unwrap(), None);
+        db.save_setting("foo", "bar").unwrap();
+        assert_eq!(db.load_setting("foo").unwrap(), Some("bar".to_string()));
+        db.save_setting("foo", "baz").unwrap();
+        assert_eq!(db.load_setting("foo").unwrap(), Some("baz".to_string()));
+    }
+
+    // ── Words & cards ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn add_custom_word_creates_four_cards() {
+        let db = db();
+        let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
+        let card_count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM cards WHERE word_id = ?1", params![word_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(card_count, 4);
+    }
+
+    #[test]
+    fn add_duplicate_custom_word_errors() {
+        let db = db();
+        db.add_custom_word("你好", "nǐ hǎo", "hello", 0, None).unwrap();
+        assert!(db.add_custom_word("你好", "nǐ hǎo", "hello", 0, None).is_err());
+    }
+
+    #[test]
+    fn search_words_matches_hanzi_pinyin_english() {
+        let db = db();
+        add_word(&db, "你好", "nǐ hǎo", "hello");
+        add_word(&db, "再见", "zài jiàn", "goodbye");
+
+        let by_hanzi = db.search_words("你").unwrap();
+        assert_eq!(by_hanzi.len(), 1);
+        assert_eq!(by_hanzi[0].hanzi, "你好");
+
+        let by_en = db.search_words("goodbye").unwrap();
+        assert_eq!(by_en.len(), 1);
+        assert_eq!(by_en[0].hanzi, "再见");
+
+        // Partial English match
+        let by_partial = db.search_words("hell").unwrap();
+        assert_eq!(by_partial.len(), 1);
+        assert_eq!(by_partial[0].hanzi, "你好");
+
+        // No match
+        assert!(db.search_words("xyz123").unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_word_removes_cards_and_reviews() {
+        let db = db();
+        let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
+        let card_id: i64 = db.conn.query_row(
+            "SELECT id FROM cards WHERE word_id = ?1 LIMIT 1", params![word_id], |r| r.get(0),
+        ).unwrap();
+        db.record_review(card_id, 4, 1000).unwrap();
+
+        db.delete_word(word_id).unwrap();
+
+        let words: i64 = db.conn.query_row("SELECT COUNT(*) FROM words WHERE id=?1", params![word_id], |r| r.get(0)).unwrap();
+        let cards: i64 = db.conn.query_row("SELECT COUNT(*) FROM cards WHERE word_id=?1", params![word_id], |r| r.get(0)).unwrap();
+        let reviews: i64 = db.conn.query_row("SELECT COUNT(*) FROM reviews WHERE card_id=?1", params![card_id], |r| r.get(0)).unwrap();
+        assert_eq!(words, 0);
+        assert_eq!(cards, 0);
+        assert_eq!(reviews, 0);
+    }
+
+    // ── Due cards & cram ──────────────────────────────────────────────────────
+
+    #[test]
+    fn due_cards_returns_cards_due_now() {
+        let db = db();
+        add_word(&db, "你好", "nǐ hǎo", "hello");
+        let dirs = [CardDirection::ZhToEn];
+        let cards = db.due_cards(&[0u8], &[], &dirs, 50, false).unwrap();
+        assert!(!cards.is_empty(), "should find due cards");
+    }
+
+    #[test]
+    fn due_cards_excludes_future_cards() {
+        let db = db();
+        let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
+        push_all_due_dates(&db, word_id);
+
+        let dirs = [CardDirection::ZhToEn];
+        let cards = db.due_cards(&[0u8], &[], &dirs, 50, false).unwrap();
+        assert!(cards.is_empty(), "future cards should not appear");
+    }
+
+    #[test]
+    fn cram_mode_returns_future_cards() {
+        let db = db();
+        let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
+        push_all_due_dates(&db, word_id);
+
+        let dirs = [CardDirection::ZhToEn];
+        let cards = db.due_cards(&[0u8], &[], &dirs, 50, true).unwrap();
+        assert!(!cards.is_empty(), "cram should return future cards");
+    }
+
+    #[test]
+    fn due_cards_excludes_suspended() {
+        let db = db();
+        let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
+        db.suspend_word(word_id).unwrap();
+
+        let dirs = [CardDirection::ZhToEn];
+        let cards = db.due_cards(&[0u8], &[], &dirs, 50, false).unwrap();
+        assert!(cards.is_empty(), "suspended cards should be excluded");
+    }
+
+    // ── SRS ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn update_card_srs_and_record_review() {
+        let db = db();
+        let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
+        let card_id: i64 = db.conn.query_row(
+            "SELECT id FROM cards WHERE word_id = ?1 LIMIT 1", params![word_id], |r| r.get(0),
+        ).unwrap();
+
+        let future = (chrono::Utc::now() + chrono::Duration::days(6)).to_rfc3339();
+        db.update_card_srs(card_id, 2.6, 6.0, 1, &future).unwrap();
+
+        let (ef, interval, reps): (f64, f64, i32) = db.conn.query_row(
+            "SELECT ease_factor, interval_days, repetitions FROM cards WHERE id = ?1",
+            params![card_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert!((ef - 2.6).abs() < 0.001);
+        assert!((interval - 6.0).abs() < 0.001);
+        assert_eq!(reps, 1);
+
+        db.record_review(card_id, 4, 1500).unwrap();
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM reviews WHERE card_id = ?1", params![card_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    // ── Suspend ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn suspend_and_unsuspend_word() {
+        let db = db();
+        let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
+        db.suspend_word(word_id).unwrap();
+
+        let suspended: i64 = db.conn.query_row(
+            "SELECT MIN(suspended) FROM cards WHERE word_id = ?1", params![word_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(suspended, 1);
+
+        db.unsuspend_word(word_id).unwrap();
+        let unsuspended: i64 = db.conn.query_row(
+            "SELECT MAX(suspended) FROM cards WHERE word_id = ?1", params![word_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(unsuspended, 0);
+    }
+
+    #[test]
+    fn suspended_words_returns_only_suspended() {
+        let db = db();
+        let w1 = add_word(&db, "你好", "nǐ hǎo", "hello");
+        let _w2 = add_word(&db, "再见", "zài jiàn", "goodbye");
+        db.suspend_word(w1).unwrap();
+
+        let suspended = db.suspended_words().unwrap();
+        assert_eq!(suspended.len(), 1);
+        assert_eq!(suspended[0].hanzi, "你好");
+    }
+
+    // ── Decks ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn create_list_delete_deck() {
+        let db = db();
+        assert!(db.list_decks().unwrap().is_empty());
+
+        db.create_deck("My Deck").unwrap();
+        db.create_deck("Other").unwrap();
+
+        let decks = db.list_decks().unwrap();
+        assert_eq!(decks.len(), 2);
+        assert!(decks.contains(&"My Deck".to_string()));
+
+        db.delete_deck("My Deck").unwrap();
+        assert_eq!(db.list_decks().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rename_deck_updates_memberships() {
+        let db = db();
+        db.create_deck("Old").unwrap();
+        let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
+        db.add_word_to_deck(word_id, "Old").unwrap();
+
+        db.rename_deck("Old", "New").unwrap();
+
+        let decks = db.list_decks().unwrap();
+        assert!(!decks.contains(&"Old".to_string()));
+        assert!(decks.contains(&"New".to_string()));
+
+        let words = db.words_in_deck("New").unwrap();
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].hanzi, "你好");
+    }
+
+    #[test]
+    fn words_in_deck_returns_correct_words() {
+        let db = db();
+        db.create_deck("A").unwrap();
+        db.create_deck("B").unwrap();
+        let w1 = add_word(&db, "你好", "nǐ hǎo", "hello");
+        let w2 = add_word(&db, "再见", "zài jiàn", "goodbye");
+        db.add_word_to_deck(w1, "A").unwrap();
+        db.add_word_to_deck(w2, "B").unwrap();
+
+        let in_a = db.words_in_deck("A").unwrap();
+        assert_eq!(in_a.len(), 1);
+        assert_eq!(in_a[0].hanzi, "你好");
+    }
+
+    // ── Bulk operations ───────────────────────────────────────────────────────
+
+    #[test]
+    fn clear_custom_words_leaves_no_custom_data() {
+        let db = db();
+        db.create_deck("Test").unwrap();
+        let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
+        db.add_word_to_deck(word_id, "Test").unwrap();
+
+        db.clear_custom_words().unwrap();
+
+        let words: i64 = db.conn.query_row("SELECT COUNT(*) FROM words WHERE level=0", [], |r| r.get(0)).unwrap();
+        let decks: i64 = db.conn.query_row("SELECT COUNT(*) FROM custom_decks", [], |r| r.get(0)).unwrap();
+        assert_eq!(words, 0);
+        assert_eq!(decks, 0);
+    }
+
+    #[test]
+    fn reset_progress_zeroes_srs_fields() {
+        let db = db();
+        let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
+        let card_id: i64 = db.conn.query_row(
+            "SELECT id FROM cards WHERE word_id=?1 LIMIT 1", params![word_id], |r| r.get(0),
+        ).unwrap();
+        let future = (chrono::Utc::now() + chrono::Duration::days(6)).to_rfc3339();
+        db.update_card_srs(card_id, 3.0, 6.0, 2, &future).unwrap();
+        db.record_review(card_id, 5, 500).unwrap();
+
+        db.reset_progress().unwrap();
+
+        let (ef, interval, reps): (f64, f64, i32) = db.conn.query_row(
+            "SELECT ease_factor, interval_days, repetitions FROM cards WHERE id=?1",
+            params![card_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert!((ef - 2.5).abs() < 0.001);
+        assert!((interval - 0.0).abs() < 0.001);
+        assert_eq!(reps, 0);
+
+        let reviews: i64 = db.conn.query_row("SELECT COUNT(*) FROM reviews", [], |r| r.get(0)).unwrap();
+        assert_eq!(reviews, 0);
+    }
+
+    // ── Heatmap ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn heatmap_data_counts_reviews_by_day() {
+        let db = db();
+        let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
+        let card_id: i64 = db.conn.query_row(
+            "SELECT id FROM cards WHERE word_id=?1 LIMIT 1", params![word_id], |r| r.get(0),
+        ).unwrap();
+        db.record_review(card_id, 4, 500).unwrap();
+        db.record_review(card_id, 4, 500).unwrap();
+
+        let map = db.heatmap_data(7).unwrap();
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        assert_eq!(map.get(&today).copied().unwrap_or(0), 2);
+    }
+
+    #[test]
+    fn heatmap_data_empty_when_no_reviews() {
+        let db = db();
+        let map = db.heatmap_data(30).unwrap();
+        assert!(map.is_empty());
+    }
 }

@@ -19,7 +19,7 @@ use std::{io, time::Duration};
 
 use config::Config;
 use db::Database;
-use ui::app_state::App;
+use ui::app_state::{App, Screen};
 use ui::events::handle_event;
 use ui::render::render;
 
@@ -94,8 +94,14 @@ fn main() -> Result<()> {
 
         if event::poll(Duration::from_millis(50))? {
             let ev = event::read()?;
+            let prev_screen = app.screen.clone();
             if handle_event(&mut app, ev)? {
                 break;
+            }
+            if matches!(app.screen, Screen::MainMenu)
+                && !matches!(prev_screen, Screen::MainMenu)
+            {
+                app.refresh_heatmap();
             }
         }
     }
