@@ -1,9 +1,9 @@
 use anyhow::Result;
-use rusqlite::{Connection, OpenFlags, params, params_from_iter, types::Value, OptionalExtension};
 use chrono::Utc;
+use rusqlite::{params, params_from_iter, types::Value, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use crate::srs::{CardDirection};
+use crate::srs::CardDirection;
 
 pub struct Database {
     pub conn: Connection,
@@ -37,12 +37,13 @@ impl Database {
     }
 
     fn migrate(&self) -> Result<()> {
-        let schema_version: i64 = self.conn.query_row(
-            "PRAGMA user_version", [], |r| r.get(0),
-        )?;
+        let schema_version: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
 
         // Idempotent: ensure tables and indexes exist on every open.
-        self.conn.execute_batch("
+        self.conn.execute_batch(
+            "
             PRAGMA journal_mode=DELETE;
             PRAGMA foreign_keys=ON;
 
@@ -96,12 +97,14 @@ impl Database {
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_words_hanzi_pinyin
                 ON words(hanzi, pinyin);
-        ")?;
+        ",
+        )?;
 
         if schema_version < 1 {
             // One-time: backfill word_deck_memberships from legacy custom_deck column
             // and deduplicate rows created before the unique indexes existed.
-            self.conn.execute_batch("
+            self.conn.execute_batch(
+                "
                 INSERT OR IGNORE INTO word_deck_memberships (word_id, deck_name)
                     SELECT id, custom_deck FROM words
                     WHERE custom_deck IS NOT NULL AND custom_deck != '';
@@ -132,21 +135,24 @@ impl Database {
                 );
 
                 PRAGMA user_version = 1;
-            ")?;
+            ",
+            )?;
         }
 
         Ok(())
     }
 
     pub fn seed_words(&self) -> Result<()> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM words", [], |r| r.get(0)
-        )?;
-        if count > 0 { return Ok(()); }
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM words", [], |r| r.get(0))?;
+        if count > 0 {
+            return Ok(());
+        }
 
         let now = Utc::now().to_rfc3339();
         let mut stmt = self.conn.prepare(
-            "INSERT OR IGNORE INTO words (hanzi, pinyin, english, level) VALUES (?1,?2,?3,?4)"
+            "INSERT OR IGNORE INTO words (hanzi, pinyin, english, level) VALUES (?1,?2,?3,?4)",
         )?;
 
         for &(hanzi, pinyin, english, level) in crate::data::hsk_words::HSK_WORDS.iter() {
@@ -211,7 +217,8 @@ impl Database {
             // A word can be in multiple decks; EXISTS avoids row duplication.
             conditions.push(
                 "(EXISTS (SELECT 1 FROM word_deck_memberships wdm \
-                          WHERE wdm.word_id = w.id AND wdm.deck_name = ?))".to_string()
+                          WHERE wdm.word_id = w.id AND wdm.deck_name = ?))"
+                    .to_string(),
             );
             params.push(Value::Text(deck.to_string()));
         }
@@ -234,24 +241,33 @@ impl Database {
         );
 
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(params), |r| {
-            Ok(CardRow {
-                id:           r.get(0)?,
-                word_id:      r.get(1)?,
-                direction:    r.get(2)?,
-                ease_factor:  r.get(3)?,
-                interval_days: r.get(4)?,
-                repetitions:  r.get(5)?,
-                hanzi:        r.get(6)?,
-                pinyin:       r.get(7)?,
-                english:      r.get(8)?,
-                level:        r.get(9)?,
-            })
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt
+            .query_map(params_from_iter(params), |r| {
+                Ok(CardRow {
+                    id: r.get(0)?,
+                    word_id: r.get(1)?,
+                    direction: r.get(2)?,
+                    ease_factor: r.get(3)?,
+                    interval_days: r.get(4)?,
+                    repetitions: r.get(5)?,
+                    hanzi: r.get(6)?,
+                    pinyin: r.get(7)?,
+                    english: r.get(8)?,
+                    level: r.get(9)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
-    pub fn update_card_srs(&self, card_id: i64, ef: f64, interval: f64, reps: i32, due: &str) -> Result<()> {
+    pub fn update_card_srs(
+        &self,
+        card_id: i64,
+        ef: f64,
+        interval: f64,
+        reps: i32,
+        due: &str,
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE cards SET ease_factor=?1, interval_days=?2, repetitions=?3, due_at=?4 WHERE id=?5",
             params![ef, interval, reps, due, card_id],
@@ -284,8 +300,12 @@ impl Database {
 
     pub fn list_decks(&self) -> Result<Vec<String>> {
         // Query custom_decks table so newly created empty decks appear immediately
-        let mut stmt = self.conn.prepare("SELECT name FROM custom_decks ORDER BY name")?;
-        let names = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name FROM custom_decks ORDER BY name")?;
+        let names = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(names)
     }
 
@@ -298,8 +318,12 @@ impl Database {
     }
 
     pub fn delete_deck(&self, name: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM word_deck_memberships WHERE deck_name = ?1", params![name])?;
-        self.conn.execute("DELETE FROM custom_decks WHERE name = ?1", params![name])?;
+        self.conn.execute(
+            "DELETE FROM word_deck_memberships WHERE deck_name = ?1",
+            params![name],
+        )?;
+        self.conn
+            .execute("DELETE FROM custom_decks WHERE name = ?1", params![name])?;
         Ok(())
     }
 
@@ -314,18 +338,24 @@ impl Database {
              FROM words w
              JOIN word_deck_memberships wdm ON wdm.word_id = w.id
              WHERE wdm.deck_name = ?1
-             ORDER BY w.level, w.hanzi"
+             ORDER BY w.level, w.hanzi",
         )?;
-        let rows = stmt.query_map(params![deck_name], |r| {
-            let deck_list: Option<String> = r.get(5)?;
-            Ok(WordRow {
-                id: r.get(0)?, hanzi: r.get(1)?, pinyin: r.get(2)?,
-                english: r.get(3)?, level: r.get(4)?,
-                decks: deck_list.map(|s| s.split('\x1F').map(|d| d.to_string()).collect())
-                                 .unwrap_or_default(),
-                suspended: r.get::<_, i64>(6)? == 1,
-            })
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt
+            .query_map(params![deck_name], |r| {
+                let deck_list: Option<String> = r.get(5)?;
+                Ok(WordRow {
+                    id: r.get(0)?,
+                    hanzi: r.get(1)?,
+                    pinyin: r.get(2)?,
+                    english: r.get(3)?,
+                    level: r.get(4)?,
+                    decks: deck_list
+                        .map(|s| s.split('\x1F').map(|d| d.to_string()).collect())
+                        .unwrap_or_default(),
+                    suspended: r.get::<_, i64>(6)? == 1,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
@@ -342,16 +372,29 @@ impl Database {
             "DELETE FROM reviews WHERE card_id IN (SELECT id FROM cards WHERE word_id = ?1)",
             params![word_id],
         )?;
-        self.conn.execute("DELETE FROM cards WHERE word_id = ?1", params![word_id])?;
-        self.conn.execute("DELETE FROM words WHERE id = ?1", params![word_id])?;
+        self.conn
+            .execute("DELETE FROM cards WHERE word_id = ?1", params![word_id])?;
+        self.conn
+            .execute("DELETE FROM words WHERE id = ?1", params![word_id])?;
         Ok(())
     }
 
-    pub fn add_custom_word(&self, hanzi: &str, pinyin: &str, english: &str, level: u8, deck: Option<&str>) -> Result<()> {
-        let existing: Option<(i64, u8)> = self.conn.query_row(
-            "SELECT id, level FROM words WHERE hanzi = ?1 AND pinyin = ?2",
-            params![hanzi, pinyin], |r| Ok((r.get(0)?, r.get(1)?)),
-        ).optional()?;
+    pub fn add_custom_word(
+        &self,
+        hanzi: &str,
+        pinyin: &str,
+        english: &str,
+        level: u8,
+        deck: Option<&str>,
+    ) -> Result<()> {
+        let existing: Option<(i64, u8)> = self
+            .conn
+            .query_row(
+                "SELECT id, level FROM words WHERE hanzi = ?1 AND pinyin = ?2",
+                params![hanzi, pinyin],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
 
         if let Some((word_id, existing_level)) = existing {
             if existing_level > 0 {
@@ -385,7 +428,8 @@ impl Database {
     }
 
     pub fn clear_custom_words(&self) -> Result<()> {
-        self.conn.execute_batch("
+        self.conn.execute_batch(
+            "
             DELETE FROM reviews
                 WHERE card_id IN (
                     SELECT id FROM cards
@@ -395,7 +439,8 @@ impl Database {
             DELETE FROM words WHERE level = 0;
             DELETE FROM word_deck_memberships WHERE deck_name IN (SELECT name FROM custom_decks);
             DELETE FROM custom_decks;
-        ")?;
+        ",
+        )?;
         Ok(())
     }
 
@@ -420,21 +465,24 @@ impl Database {
                     COALESCE((SELECT MIN(c.suspended) FROM cards c WHERE c.word_id = w.id), 0)
              FROM words w
              WHERE w.hanzi LIKE ?1 OR w.pinyin LIKE ?1 OR w.english LIKE ?1
-             LIMIT 500"
+             LIMIT 500",
         )?;
-        let rows = stmt.query_map(params![pat], |r| {
-            let deck_list: Option<String> = r.get(5)?;
-            Ok(WordRow {
-                id: r.get(0)?,
-                hanzi: r.get(1)?,
-                pinyin: r.get(2)?,
-                english: r.get(3)?,
-                level: r.get(4)?,
-                decks: deck_list.map(|s| s.split('\x1F').map(|d| d.to_string()).collect())
-                                 .unwrap_or_default(),
-                suspended: r.get::<_, i64>(6)? == 1,
-            })
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt
+            .query_map(params![pat], |r| {
+                let deck_list: Option<String> = r.get(5)?;
+                Ok(WordRow {
+                    id: r.get(0)?,
+                    hanzi: r.get(1)?,
+                    pinyin: r.get(2)?,
+                    english: r.get(3)?,
+                    level: r.get(4)?,
+                    decks: deck_list
+                        .map(|s| s.split('\x1F').map(|d| d.to_string()).collect())
+                        .unwrap_or_default(),
+                    suspended: r.get::<_, i64>(6)? == 1,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
@@ -465,31 +513,37 @@ impl Database {
     // ── Stats ────────────────────────────────────────────────────────────────
 
     pub fn stats(&self) -> Result<Stats> {
-        let total_reviews: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM reviews", [], |r| r.get(0)
-        )?;
+        let total_reviews: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM reviews", [], |r| r.get(0))?;
 
         let today = Utc::now().format("%Y-%m-%d").to_string();
         let reviews_today: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM reviews WHERE reviewed_at LIKE ?1",
-            params![format!("{}%", today)], |r| r.get(0)
+            params![format!("{}%", today)],
+            |r| r.get(0),
         )?;
 
-        let avg_grade: f64 = self.conn.query_row(
-            "SELECT COALESCE(AVG(grade),0) FROM reviews", [], |r| r.get(0)
-        )?;
+        let avg_grade: f64 =
+            self.conn
+                .query_row("SELECT COALESCE(AVG(grade),0) FROM reviews", [], |r| {
+                    r.get(0)
+                })?;
 
         let cards_due: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM cards WHERE due_at <= ?1",
-            params![Utc::now().to_rfc3339()], |r| r.get(0)
+            params![Utc::now().to_rfc3339()],
+            |r| r.get(0),
         )?;
 
-        let total_cards: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM cards", [], |r| r.get(0)
-        )?;
+        let total_cards: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM cards", [], |r| r.get(0))?;
 
         let mature_cards: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM cards WHERE interval_days >= 21", [], |r| r.get(0)
+            "SELECT COUNT(*) FROM cards WHERE interval_days >= 21",
+            [],
+            |r| r.get(0),
         )?;
 
         // Streak: count consecutive days with at least 1 review
@@ -524,17 +578,19 @@ impl Database {
              WHERE w.level = 0
                AND NOT EXISTS (SELECT 1 FROM word_deck_memberships WHERE word_id = w.id)
              HAVING COUNT(*) > 0
-             ORDER BY 1, 2"
+             ORDER BY 1, 2",
         )?;
-        let level_stats: Vec<LevelStat> = level_stmt.query_map([], |r| {
-            Ok(LevelStat {
-                level: r.get(0)?,
-                deck_name: r.get(1)?,
-                card_count: r.get(2)?,
-                mature: r.get(3)?,
-                reviewed: r.get(4)?,
-            })
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let level_stats: Vec<LevelStat> = level_stmt
+            .query_map([], |r| {
+                Ok(LevelStat {
+                    level: r.get(0)?,
+                    deck_name: r.get(1)?,
+                    card_count: r.get(2)?,
+                    mature: r.get(3)?,
+                    reviewed: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         // Weakest words: group by word, take the lowest EF across all directions,
         // only include words that have at least one review recorded.
@@ -544,26 +600,28 @@ impl Database {
              FROM cards c JOIN words w ON w.id = c.word_id
              WHERE EXISTS (SELECT 1 FROM reviews r WHERE r.card_id = c.id)
              GROUP BY w.id
-             ORDER BY ef ASC LIMIT 10"
+             ORDER BY ef ASC LIMIT 10",
         )?;
-        let weakest: Vec<WeakCard> = weak_stmt.query_map([], |r| {
-            Ok(WeakCard {
-                hanzi: r.get(0)?,
-                pinyin: r.get(1)?,
-                ease_factor: r.get(2)?,
-            })
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let weakest: Vec<WeakCard> = weak_stmt
+            .query_map([], |r| {
+                Ok(WeakCard {
+                    hanzi: r.get(0)?,
+                    pinyin: r.get(1)?,
+                    ease_factor: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         // Last 7 days review counts
         let mut daily_stmt = self.conn.prepare(
             "SELECT substr(reviewed_at,1,10) as day, COUNT(*) as cnt
              FROM reviews
              WHERE reviewed_at >= datetime('now','-7 days')
-             GROUP BY day ORDER BY day"
+             GROUP BY day ORDER BY day",
         )?;
-        let daily_reviews: Vec<(String, i64)> = daily_stmt.query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let daily_reviews: Vec<(String, i64)> = daily_stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         Ok(Stats {
             total_reviews,
@@ -581,9 +639,11 @@ impl Database {
 
     fn calculate_streak(&self) -> Result<i64> {
         let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT substr(reviewed_at,1,10) as day FROM reviews ORDER BY day DESC"
+            "SELECT DISTINCT substr(reviewed_at,1,10) as day FROM reviews ORDER BY day DESC",
         )?;
-        let days: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let days: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let today = Utc::now().format("%Y-%m-%d").to_string();
         let mut streak = 0i64;
@@ -594,7 +654,9 @@ impl Database {
                 streak += 1;
                 // decrement expected by 1 day (naive string arithmetic via chrono)
                 if let Ok(d) = chrono::NaiveDate::parse_from_str(&expected, "%Y-%m-%d") {
-                    expected = (d - chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+                    expected = (d - chrono::Duration::days(1))
+                        .format("%Y-%m-%d")
+                        .to_string();
                 } else {
                     break;
                 }
@@ -624,18 +686,24 @@ impl Database {
              FROM words w
              JOIN cards c ON c.word_id = w.id
              WHERE c.suspended = 1
-             ORDER BY w.level, w.hanzi"
+             ORDER BY w.level, w.hanzi",
         )?;
-        let rows = stmt.query_map([], |r| {
-            let deck_list: Option<String> = r.get(5)?;
-            Ok(WordRow {
-                id: r.get(0)?, hanzi: r.get(1)?, pinyin: r.get(2)?,
-                english: r.get(3)?, level: r.get(4)?,
-                decks: deck_list.map(|s| s.split('\x1F').map(|d| d.to_string()).collect())
-                                 .unwrap_or_default(),
-                suspended: true,
-            })
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt
+            .query_map([], |r| {
+                let deck_list: Option<String> = r.get(5)?;
+                Ok(WordRow {
+                    id: r.get(0)?,
+                    hanzi: r.get(1)?,
+                    pinyin: r.get(2)?,
+                    english: r.get(3)?,
+                    level: r.get(4)?,
+                    decks: deck_list
+                        .map(|s| s.split('\x1F').map(|d| d.to_string()).collect())
+                        .unwrap_or_default(),
+                    suspended: true,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
@@ -656,7 +724,7 @@ impl Database {
             "SELECT substr(reviewed_at, 1, 10) as day, COUNT(*) as cnt
              FROM reviews
              WHERE date(reviewed_at) >= date('now', ?1)
-             GROUP BY day"
+             GROUP BY day",
         )?;
         let arg = format!("-{days} days");
         let rows = stmt.query_map(params![arg], |r| {
@@ -680,19 +748,24 @@ impl Database {
                               WHERE wdm.word_id = w.id
                               ORDER BY wdm.deck_name), '')
              FROM words w WHERE w.level = 0
-             ORDER BY w.hanzi"
+             ORDER BY w.hanzi",
         )?;
 
-        let words: Vec<ExportWord> = stmt.query_map([], |r| {
-            let decks_raw: String = r.get(3)?;
-            Ok(ExportWord {
-                hanzi:   r.get(0)?,
-                pinyin:  r.get(1)?,
-                english: r.get(2)?,
-                decks:   decks_raw.split('\0').filter(|s| !s.is_empty())
-                                  .map(|s| s.to_string()).collect(),
-            })
-        })?.collect::<rusqlite::Result<_>>()?;
+        let words: Vec<ExportWord> = stmt
+            .query_map([], |r| {
+                let decks_raw: String = r.get(3)?;
+                Ok(ExportWord {
+                    hanzi: r.get(0)?,
+                    pinyin: r.get(1)?,
+                    english: r.get(2)?,
+                    decks: decks_raw
+                        .split('\0')
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .collect(),
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
 
         let count = words.len();
         let json = serde_json::to_string_pretty(&words)?;
@@ -701,18 +774,18 @@ impl Database {
     }
 
     pub fn import_words_json(&self, path: &std::path::Path) -> Result<(usize, usize)> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Cannot read file: {e}"))?;
-        let words: Vec<ExportWord> = serde_json::from_str(&content)
-            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let content =
+            std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("Cannot read file: {e}"))?;
+        let words: Vec<ExportWord> =
+            serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
 
         let mut imported = 0usize;
-        let mut skipped  = 0usize;
+        let mut skipped = 0usize;
         let now = Utc::now().to_rfc3339();
 
         for word in &words {
-            let hanzi   = word.hanzi.trim();
-            let pinyin  = word.pinyin.trim();
+            let hanzi = word.hanzi.trim();
+            let pinyin = word.pinyin.trim();
             let english = word.english.trim();
             if hanzi.is_empty() || pinyin.is_empty() || english.is_empty() {
                 skipped += 1;
@@ -725,10 +798,14 @@ impl Database {
             )?;
 
             // Only proceed if this is (or becomes) a custom word.
-            let word_id: Option<i64> = self.conn.query_row(
-                "SELECT id FROM words WHERE hanzi=?1 AND pinyin=?2 AND level=0",
-                params![hanzi, pinyin], |r| r.get(0),
-            ).optional()?;
+            let word_id: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT id FROM words WHERE hanzi=?1 AND pinyin=?2 AND level=0",
+                    params![hanzi, pinyin],
+                    |r| r.get(0),
+                )
+                .optional()?;
 
             let Some(word_id) = word_id else {
                 skipped += 1; // conflicts with an HSK entry
@@ -748,7 +825,11 @@ impl Database {
                 let _ = self.add_word_to_deck(word_id, deck_name);
             }
 
-            if inserted > 0 { imported += 1; } else { skipped += 1; }
+            if inserted > 0 {
+                imported += 1;
+            } else {
+                skipped += 1;
+            }
         }
 
         Ok((imported, skipped))
@@ -765,21 +846,19 @@ impl Database {
             Err(e) => Err(e.into()),
         }
     }
-
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExportWord {
-    pub hanzi:   String,
-    pub pinyin:  String,
+    pub hanzi: String,
+    pub pinyin: String,
     pub english: String,
-    pub decks:   Vec<String>,
+    pub decks: Vec<String>,
 }
 
 fn placeholders(n: usize) -> String {
     std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",")
 }
-
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -844,21 +923,28 @@ pub struct WeakCard {
 mod tests {
     use super::*;
 
-    fn db() -> Database { Database::open_in_memory().expect("in-memory db") }
+    fn db() -> Database {
+        Database::open_in_memory().expect("in-memory db")
+    }
 
     fn add_word(db: &Database, hanzi: &str, pinyin: &str, english: &str) -> i64 {
         db.add_custom_word(hanzi, pinyin, english, 0, None).unwrap();
-        db.conn.query_row(
-            "SELECT id FROM words WHERE hanzi = ?1 AND pinyin = ?2",
-            params![hanzi, pinyin], |r| r.get(0),
-        ).unwrap()
+        db.conn
+            .query_row(
+                "SELECT id FROM words WHERE hanzi = ?1 AND pinyin = ?2",
+                params![hanzi, pinyin],
+                |r| r.get(0),
+            )
+            .unwrap()
     }
 
     fn push_all_due_dates(db: &Database, word_id: i64) {
-        db.conn.execute(
-            "UPDATE cards SET due_at = datetime('now', '+30 days') WHERE word_id = ?1",
-            params![word_id],
-        ).unwrap();
+        db.conn
+            .execute(
+                "UPDATE cards SET due_at = datetime('now', '+30 days') WHERE word_id = ?1",
+                params![word_id],
+            )
+            .unwrap();
     }
 
     // ── Schema ────────────────────────────────────────────────────────────────
@@ -867,13 +953,23 @@ mod tests {
     fn migrate_creates_all_tables() {
         let db = db();
         let tables: Vec<String> = {
-            let mut s = db.conn.prepare(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            ).unwrap();
-            s.query_map([], |r| r.get(0)).unwrap()
-             .collect::<rusqlite::Result<Vec<_>>>().unwrap()
+            let mut s = db
+                .conn
+                .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                .unwrap();
+            s.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
         };
-        for t in &["cards", "custom_decks", "reviews", "settings", "word_deck_memberships", "words"] {
+        for t in &[
+            "cards",
+            "custom_decks",
+            "reviews",
+            "settings",
+            "word_deck_memberships",
+            "words",
+        ] {
             assert!(tables.iter().any(|n| n == t), "missing table: {t}");
         }
     }
@@ -881,7 +977,10 @@ mod tests {
     #[test]
     fn schema_version_set_after_migration() {
         let db = db();
-        let v: i64 = db.conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let v: i64 = db
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(v, 1);
     }
 
@@ -903,17 +1002,25 @@ mod tests {
     fn add_custom_word_creates_four_cards() {
         let db = db();
         let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
-        let card_count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM cards WHERE word_id = ?1", params![word_id], |r| r.get(0),
-        ).unwrap();
+        let card_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM cards WHERE word_id = ?1",
+                params![word_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(card_count, 4);
     }
 
     #[test]
     fn add_duplicate_custom_word_errors() {
         let db = db();
-        db.add_custom_word("你好", "nǐ hǎo", "hello", 0, None).unwrap();
-        assert!(db.add_custom_word("你好", "nǐ hǎo", "hello", 0, None).is_err());
+        db.add_custom_word("你好", "nǐ hǎo", "hello", 0, None)
+            .unwrap();
+        assert!(db
+            .add_custom_word("你好", "nǐ hǎo", "hello", 0, None)
+            .is_err());
     }
 
     #[test]
@@ -943,16 +1050,42 @@ mod tests {
     fn delete_word_removes_cards_and_reviews() {
         let db = db();
         let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
-        let card_id: i64 = db.conn.query_row(
-            "SELECT id FROM cards WHERE word_id = ?1 LIMIT 1", params![word_id], |r| r.get(0),
-        ).unwrap();
+        let card_id: i64 = db
+            .conn
+            .query_row(
+                "SELECT id FROM cards WHERE word_id = ?1 LIMIT 1",
+                params![word_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         db.record_review(card_id, 4, 1000).unwrap();
 
         db.delete_word(word_id).unwrap();
 
-        let words: i64 = db.conn.query_row("SELECT COUNT(*) FROM words WHERE id=?1", params![word_id], |r| r.get(0)).unwrap();
-        let cards: i64 = db.conn.query_row("SELECT COUNT(*) FROM cards WHERE word_id=?1", params![word_id], |r| r.get(0)).unwrap();
-        let reviews: i64 = db.conn.query_row("SELECT COUNT(*) FROM reviews WHERE card_id=?1", params![card_id], |r| r.get(0)).unwrap();
+        let words: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM words WHERE id=?1",
+                params![word_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let cards: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM cards WHERE word_id=?1",
+                params![word_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let reviews: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM reviews WHERE card_id=?1",
+                params![card_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(words, 0);
         assert_eq!(cards, 0);
         assert_eq!(reviews, 0);
@@ -1008,25 +1141,39 @@ mod tests {
     fn update_card_srs_and_record_review() {
         let db = db();
         let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
-        let card_id: i64 = db.conn.query_row(
-            "SELECT id FROM cards WHERE word_id = ?1 LIMIT 1", params![word_id], |r| r.get(0),
-        ).unwrap();
+        let card_id: i64 = db
+            .conn
+            .query_row(
+                "SELECT id FROM cards WHERE word_id = ?1 LIMIT 1",
+                params![word_id],
+                |r| r.get(0),
+            )
+            .unwrap();
 
         let future = (chrono::Utc::now() + chrono::Duration::days(6)).to_rfc3339();
         db.update_card_srs(card_id, 2.6, 6.0, 1, &future).unwrap();
 
-        let (ef, interval, reps): (f64, f64, i32) = db.conn.query_row(
-            "SELECT ease_factor, interval_days, repetitions FROM cards WHERE id = ?1",
-            params![card_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        ).unwrap();
+        let (ef, interval, reps): (f64, f64, i32) = db
+            .conn
+            .query_row(
+                "SELECT ease_factor, interval_days, repetitions FROM cards WHERE id = ?1",
+                params![card_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
         assert!((ef - 2.6).abs() < 0.001);
         assert!((interval - 6.0).abs() < 0.001);
         assert_eq!(reps, 1);
 
         db.record_review(card_id, 4, 1500).unwrap();
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM reviews WHERE card_id = ?1", params![card_id], |r| r.get(0),
-        ).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM reviews WHERE card_id = ?1",
+                params![card_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1);
     }
 
@@ -1038,15 +1185,25 @@ mod tests {
         let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
         db.suspend_word(word_id).unwrap();
 
-        let suspended: i64 = db.conn.query_row(
-            "SELECT MIN(suspended) FROM cards WHERE word_id = ?1", params![word_id], |r| r.get(0),
-        ).unwrap();
+        let suspended: i64 = db
+            .conn
+            .query_row(
+                "SELECT MIN(suspended) FROM cards WHERE word_id = ?1",
+                params![word_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(suspended, 1);
 
         db.unsuspend_word(word_id).unwrap();
-        let unsuspended: i64 = db.conn.query_row(
-            "SELECT MAX(suspended) FROM cards WHERE word_id = ?1", params![word_id], |r| r.get(0),
-        ).unwrap();
+        let unsuspended: i64 = db
+            .conn
+            .query_row(
+                "SELECT MAX(suspended) FROM cards WHERE word_id = ?1",
+                params![word_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(unsuspended, 0);
     }
 
@@ -1124,8 +1281,14 @@ mod tests {
 
         db.clear_custom_words().unwrap();
 
-        let words: i64 = db.conn.query_row("SELECT COUNT(*) FROM words WHERE level=0", [], |r| r.get(0)).unwrap();
-        let decks: i64 = db.conn.query_row("SELECT COUNT(*) FROM custom_decks", [], |r| r.get(0)).unwrap();
+        let words: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM words WHERE level=0", [], |r| r.get(0))
+            .unwrap();
+        let decks: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM custom_decks", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(words, 0);
         assert_eq!(decks, 0);
     }
@@ -1134,24 +1297,36 @@ mod tests {
     fn reset_progress_zeroes_srs_fields() {
         let db = db();
         let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
-        let card_id: i64 = db.conn.query_row(
-            "SELECT id FROM cards WHERE word_id=?1 LIMIT 1", params![word_id], |r| r.get(0),
-        ).unwrap();
+        let card_id: i64 = db
+            .conn
+            .query_row(
+                "SELECT id FROM cards WHERE word_id=?1 LIMIT 1",
+                params![word_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         let future = (chrono::Utc::now() + chrono::Duration::days(6)).to_rfc3339();
         db.update_card_srs(card_id, 3.0, 6.0, 2, &future).unwrap();
         db.record_review(card_id, 5, 500).unwrap();
 
         db.reset_progress().unwrap();
 
-        let (ef, interval, reps): (f64, f64, i32) = db.conn.query_row(
-            "SELECT ease_factor, interval_days, repetitions FROM cards WHERE id=?1",
-            params![card_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        ).unwrap();
+        let (ef, interval, reps): (f64, f64, i32) = db
+            .conn
+            .query_row(
+                "SELECT ease_factor, interval_days, repetitions FROM cards WHERE id=?1",
+                params![card_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
         assert!((ef - 2.5).abs() < 0.001);
         assert!((interval - 0.0).abs() < 0.001);
         assert_eq!(reps, 0);
 
-        let reviews: i64 = db.conn.query_row("SELECT COUNT(*) FROM reviews", [], |r| r.get(0)).unwrap();
+        let reviews: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM reviews", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(reviews, 0);
     }
 
@@ -1161,9 +1336,14 @@ mod tests {
     fn heatmap_data_counts_reviews_by_day() {
         let db = db();
         let word_id = add_word(&db, "你好", "nǐ hǎo", "hello");
-        let card_id: i64 = db.conn.query_row(
-            "SELECT id FROM cards WHERE word_id=?1 LIMIT 1", params![word_id], |r| r.get(0),
-        ).unwrap();
+        let card_id: i64 = db
+            .conn
+            .query_row(
+                "SELECT id FROM cards WHERE word_id=?1 LIMIT 1",
+                params![word_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         db.record_review(card_id, 4, 500).unwrap();
         db.record_review(card_id, 4, 500).unwrap();
 
@@ -1183,7 +1363,10 @@ mod tests {
 
     fn temp_json(tag: &str) -> std::path::PathBuf {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
         std::env::temp_dir().join(format!("zhli_test_{tag}_{nanos}.json"))
     }
 
@@ -1260,12 +1443,20 @@ mod tests {
         std::fs::write(&path, json).unwrap();
         db.import_words_json(&path).unwrap();
 
-        let word_id: i64 = db.conn.query_row(
-            "SELECT id FROM words WHERE hanzi = '再见'", [], |r| r.get(0),
-        ).unwrap();
-        let card_count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM cards WHERE word_id = ?1", params![word_id], |r| r.get(0),
-        ).unwrap();
+        let word_id: i64 = db
+            .conn
+            .query_row("SELECT id FROM words WHERE hanzi = '再见'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let card_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM cards WHERE word_id = ?1",
+                params![word_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(card_count, 4);
         let _ = std::fs::remove_file(&path);
     }

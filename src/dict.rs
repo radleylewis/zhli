@@ -2,11 +2,11 @@ use anyhow::Result;
 use scraper::{Html, Selector};
 use std::sync::OnceLock;
 
-static ROW_SEL:      OnceLock<Selector> = OnceLock::new();
-static HANZI_A_SEL:  OnceLock<Selector> = OnceLock::new();
+static ROW_SEL: OnceLock<Selector> = OnceLock::new();
+static HANZI_A_SEL: OnceLock<Selector> = OnceLock::new();
 static PINYIN_A_SEL: OnceLock<Selector> = OnceLock::new();
-static MPT_SEL:      OnceLock<Selector> = OnceLock::new();
-static DEFS_SEL:     OnceLock<Selector> = OnceLock::new();
+static MPT_SEL: OnceLock<Selector> = OnceLock::new();
+static DEFS_SEL: OnceLock<Selector> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct DictEntry {
@@ -24,7 +24,11 @@ pub fn lookup(query: &str) -> Result<Vec<DictEntry>> {
     let mut all_results: Vec<DictEntry> = Vec::new();
 
     // Use "contains" match for ASCII queries (English/pinyin), "begins with" for Chinese
-    let wdqm = if query.chars().any(|c| c as u32 > 0x7F) { "1" } else { "3" };
+    let wdqm = if query.chars().any(|c| c as u32 > 0x7F) {
+        "1"
+    } else {
+        "3"
+    };
 
     for page in 0..MAX_PAGES {
         let body = ureq::get("https://www.mdbg.net/chinese/dictionary")
@@ -40,7 +44,10 @@ pub fn lookup(query: &str) -> Result<Vec<DictEntry>> {
 
         for entry in page_results {
             // Deduplicate across pages by (hanzi, pinyin)
-            if !all_results.iter().any(|e| e.hanzi == entry.hanzi && e.pinyin == entry.pinyin) {
+            if !all_results
+                .iter()
+                .any(|e| e.hanzi == entry.hanzi && e.pinyin == entry.pinyin)
+            {
                 all_results.push(entry);
             }
         }
@@ -60,11 +67,14 @@ pub fn filter_results<'a>(results: &'a [DictEntry], filter: &str) -> Vec<&'a Dic
         return results.iter().collect();
     }
     let f = filter.to_lowercase();
-    results.iter().filter(|e| {
-        e.hanzi.contains(filter)
-            || e.pinyin.to_lowercase().contains(&f)
-            || e.english.to_lowercase().contains(&f)
-    }).collect()
+    results
+        .iter()
+        .filter(|e| {
+            e.hanzi.contains(filter)
+                || e.pinyin.to_lowercase().contains(&f)
+                || e.english.to_lowercase().contains(&f)
+        })
+        .collect()
 }
 
 fn parse_page(html: &str) -> Result<Vec<DictEntry>> {
@@ -72,23 +82,33 @@ fn parse_page(html: &str) -> Result<Vec<DictEntry>> {
 
     // mpt1–mpt4 are tone classes; neutral tone may be mpt0/mpt5. Match any mpt* class.
     // We only want spans inside the FIRST <a> of each div (simplified form).
-    let row_sel      = ROW_SEL.get_or_init(|| Selector::parse("table.wordresults tr.row").expect("valid selector"));
-    let hanzi_a_sel  = HANZI_A_SEL.get_or_init(|| Selector::parse("div.hanzi a").expect("valid selector"));
-    let pinyin_a_sel = PINYIN_A_SEL.get_or_init(|| Selector::parse("div.pinyin a").expect("valid selector"));
-    let mpt_sel      = MPT_SEL.get_or_init(|| Selector::parse("span[class^='mpt']").expect("valid selector"));
-    let defs_sel     = DEFS_SEL.get_or_init(|| Selector::parse("div.defs").expect("valid selector"));
+    let row_sel = ROW_SEL
+        .get_or_init(|| Selector::parse("table.wordresults tr.row").expect("valid selector"));
+    let hanzi_a_sel =
+        HANZI_A_SEL.get_or_init(|| Selector::parse("div.hanzi a").expect("valid selector"));
+    let pinyin_a_sel =
+        PINYIN_A_SEL.get_or_init(|| Selector::parse("div.pinyin a").expect("valid selector"));
+    let mpt_sel =
+        MPT_SEL.get_or_init(|| Selector::parse("span[class^='mpt']").expect("valid selector"));
+    let defs_sel = DEFS_SEL.get_or_init(|| Selector::parse("div.defs").expect("valid selector"));
 
     let mut results = Vec::new();
 
     for row in doc.select(row_sel) {
         // Take only the FIRST <a> inside div.hanzi (simplified form, not traditional)
-        let hanzi: String = row.select(hanzi_a_sel)
+        let hanzi: String = row
+            .select(hanzi_a_sel)
             .next()
-            .map(|a| a.select(mpt_sel).map(|s| s.text().collect::<String>()).collect())
+            .map(|a| {
+                a.select(mpt_sel)
+                    .map(|s| s.text().collect::<String>())
+                    .collect()
+            })
             .unwrap_or_default();
 
         // Same for pinyin — first <a> gives simplified form's reading
-        let pinyin: String = row.select(pinyin_a_sel)
+        let pinyin: String = row
+            .select(pinyin_a_sel)
             .next()
             .map(|a| {
                 a.select(mpt_sel)
@@ -98,13 +118,18 @@ fn parse_page(html: &str) -> Result<Vec<DictEntry>> {
             })
             .unwrap_or_default();
 
-        let english: String = row.select(defs_sel)
+        let english: String = row
+            .select(defs_sel)
             .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
         if !hanzi.is_empty() && !pinyin.is_empty() {
-            results.push(DictEntry { hanzi, pinyin, english });
+            results.push(DictEntry {
+                hanzi,
+                pinyin,
+                english,
+            });
         }
     }
 
@@ -120,8 +145,8 @@ fn sort_by_relevance(results: &mut [DictEntry], query: &str) {
     let q = query.to_lowercase();
     results.sort_by_key(|e| {
         let eng = e.english.to_lowercase();
-        let exact   = usize::from(eng != q);
-        let starts  = usize::from(!eng.starts_with(&q));
+        let exact = usize::from(eng != q);
+        let starts = usize::from(!eng.starts_with(&q));
         // Prefer shorter English definitions — primary/standalone entries ("Australia")
         // sort before longer contextual ones ("Australia (slang for …)")
         let eng_len = e.english.len();

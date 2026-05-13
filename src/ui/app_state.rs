@@ -1,8 +1,8 @@
-use std::time::Instant;
-use std::sync::mpsc;
-use anyhow::Result;
 use crate::db::{CardRow, Database, Stats};
 use crate::srs::{CardDirection, ReviewGrade};
+use anyhow::Result;
+use std::sync::mpsc;
+use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClearAction {
@@ -43,8 +43,8 @@ pub struct ContentItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewPhase {
-    Prompt,       // Show question, user types answer
-    ShowAnswer,   // Show answer + feedback, user grades
+    Prompt,     // Show question, user types answer
+    ShowAnswer, // Show answer + feedback, user grades
 }
 
 pub struct App {
@@ -79,7 +79,7 @@ pub struct App {
     pub deck_preview: Vec<crate::db::WordRow>,
     // Dictionary lookup (AddCustomWord screen)
     pub dict_query: String,
-    pub dict_last_query: String,   // query that produced the current results
+    pub dict_last_query: String, // query that produced the current results
     pub dict_results: Vec<crate::dict::DictEntry>,
     pub dict_cursor: usize,
     pub dict_status: String,
@@ -127,7 +127,10 @@ pub struct App {
 
 impl App {
     pub fn new(db: Database, session_limit: usize, data_dir: std::path::PathBuf) -> Self {
-        let mode_cursor = db.load_setting("mode_cursor").ok().flatten()
+        let mode_cursor = db
+            .load_setting("mode_cursor")
+            .ok()
+            .flatten()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(0)
             .min(3);
@@ -140,20 +143,35 @@ impl App {
         ];
 
         // Restore selected directions; fall back to the mode_cursor direction.
-        let selected_directions: Vec<CardDirection> = db.load_setting("selected_directions")
-            .ok().flatten()
-            .map(|v| v.split(',')
-                .filter_map(|s| CardDirection::from_str_opt(s.trim()))
-                .collect::<Vec<_>>())
+        let selected_directions: Vec<CardDirection> = db
+            .load_setting("selected_directions")
+            .ok()
+            .flatten()
+            .map(|v| {
+                v.split(',')
+                    .filter_map(|s| CardDirection::from_str_opt(s.trim()))
+                    .collect::<Vec<_>>()
+            })
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| vec![all_directions[mode_cursor].clone()]);
 
-        let saved_levels: Vec<u8> = db.load_setting("selected_levels").ok().flatten()
+        let saved_levels: Vec<u8> = db
+            .load_setting("selected_levels")
+            .ok()
+            .flatten()
             .map(|v| v.split(',').filter_map(|s| s.parse().ok()).collect())
             .unwrap_or_else(|| (1u8..=6).collect());
 
-        let saved_deck_sel: Vec<String> = db.load_setting("selected_decks").ok().flatten()
-            .map(|v| v.split('\x1F').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect())
+        let saved_deck_sel: Vec<String> = db
+            .load_setting("selected_decks")
+            .ok()
+            .flatten()
+            .map(|v| {
+                v.split('\x1F')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
             .unwrap_or_default();
 
         let decks = db.list_decks().unwrap_or_default();
@@ -168,7 +186,10 @@ impl App {
             })
             .chain(decks.into_iter().map(|d| {
                 let selected = saved_deck_sel.contains(&d);
-                ContentItem { kind: ContentKind::Deck(d), selected }
+                ContentItem {
+                    kind: ContentKind::Deck(d),
+                    selected,
+                }
             }))
             .collect();
 
@@ -235,34 +256,70 @@ impl App {
     }
 
     pub fn save_study_settings(&self) {
-        let _ = self.db.save_setting("mode_cursor", &self.mode_cursor.to_string());
-        let dirs: String = self.selected_directions.iter()
+        let _ = self
+            .db
+            .save_setting("mode_cursor", &self.mode_cursor.to_string());
+        let dirs: String = self
+            .selected_directions
+            .iter()
             .map(|d| d.as_str())
             .collect::<Vec<_>>()
             .join(",");
         let _ = self.db.save_setting("selected_directions", &dirs);
-        let levels: String = self.content_items.iter()
+        let levels: String = self
+            .content_items
+            .iter()
             .filter(|i| i.selected)
-            .filter_map(|i| if let ContentKind::Hsk(l) = i.kind { Some(l.to_string()) } else { None })
+            .filter_map(|i| {
+                if let ContentKind::Hsk(l) = i.kind {
+                    Some(l.to_string())
+                } else {
+                    None
+                }
+            })
             .collect::<Vec<_>>()
             .join(",");
         let _ = self.db.save_setting("selected_levels", &levels);
-        let decks: String = self.content_items.iter()
+        let decks: String = self
+            .content_items
+            .iter()
             .filter(|i| i.selected)
-            .filter_map(|i| if let ContentKind::Deck(d) = &i.kind { Some(d.clone()) } else { None })
+            .filter_map(|i| {
+                if let ContentKind::Deck(d) = &i.kind {
+                    Some(d.clone())
+                } else {
+                    None
+                }
+            })
             .collect::<Vec<_>>()
             .join("\x1F");
         let _ = self.db.save_setting("selected_decks", &decks);
     }
 
     pub fn load_review_session(&mut self) -> Result<()> {
-        let selected_levels: Vec<u8> = self.content_items.iter()
+        let selected_levels: Vec<u8> = self
+            .content_items
+            .iter()
             .filter(|it| it.selected)
-            .filter_map(|it| if let ContentKind::Hsk(l) = it.kind { Some(l) } else { None })
+            .filter_map(|it| {
+                if let ContentKind::Hsk(l) = it.kind {
+                    Some(l)
+                } else {
+                    None
+                }
+            })
             .collect();
-        let selected_decks_owned: Vec<String> = self.content_items.iter()
+        let selected_decks_owned: Vec<String> = self
+            .content_items
+            .iter()
             .filter(|it| it.selected)
-            .filter_map(|it| if let ContentKind::Deck(d) = &it.kind { Some(d.clone()) } else { None })
+            .filter_map(|it| {
+                if let ContentKind::Deck(d) = &it.kind {
+                    Some(d.clone())
+                } else {
+                    None
+                }
+            })
             .collect();
         let selected_decks: Vec<&str> = selected_decks_owned.iter().map(|d| d.as_str()).collect();
         self.review_queue = self.db.due_cards(
@@ -315,7 +372,13 @@ impl App {
             // 1.0 = correct  → suggest Good (4)
             // 0.5-1.0 = partial (e.g. right syllable, wrong tone) → suggest Hard (2, incorrect)
             // 0.0 = wrong    → suggest Wrong (1)
-            self.grade_cursor = if score >= 1.0 { 4 } else if score >= 0.5 { 2 } else { 1 };
+            self.grade_cursor = if score >= 1.0 {
+                4
+            } else if score >= 0.5 {
+                2
+            } else {
+                1
+            };
         }
         Ok(())
     }
@@ -325,7 +388,9 @@ impl App {
         if let Some(card) = self.review_queue.get(self.current_card_idx).cloned() {
             crate::srs::apply_review(&self.db, &card, grade, elapsed)?;
             self.session_total += 1;
-            if grade as i32 >= 3 { self.session_correct += 1; }
+            if grade as i32 >= 3 {
+                self.session_correct += 1;
+            }
         }
         self.advance_card();
         Ok(())
@@ -340,20 +405,50 @@ impl App {
 
     pub fn refresh_content_items(&mut self) {
         let decks = self.db.list_decks().unwrap_or_default();
-        let old_hsk: Vec<(u8, bool)> = self.content_items.iter()
-            .filter_map(|it| if let ContentKind::Hsk(l) = it.kind { Some((l, it.selected)) } else { None })
+        let old_hsk: Vec<(u8, bool)> = self
+            .content_items
+            .iter()
+            .filter_map(|it| {
+                if let ContentKind::Hsk(l) = it.kind {
+                    Some((l, it.selected))
+                } else {
+                    None
+                }
+            })
             .collect();
-        let old_decks: Vec<(String, bool)> = self.content_items.iter()
-            .filter_map(|it| if let ContentKind::Deck(d) = &it.kind { Some((d.clone(), it.selected)) } else { None })
+        let old_decks: Vec<(String, bool)> = self
+            .content_items
+            .iter()
+            .filter_map(|it| {
+                if let ContentKind::Deck(d) = &it.kind {
+                    Some((d.clone(), it.selected))
+                } else {
+                    None
+                }
+            })
             .collect();
         self.content_items = (1u8..=6)
             .map(|l| {
-                let sel = old_hsk.iter().find(|(level, _)| *level == l).map(|(_, s)| *s).unwrap_or(true);
-                ContentItem { kind: ContentKind::Hsk(l), selected: sel }
+                let sel = old_hsk
+                    .iter()
+                    .find(|(level, _)| *level == l)
+                    .map(|(_, s)| *s)
+                    .unwrap_or(true);
+                ContentItem {
+                    kind: ContentKind::Hsk(l),
+                    selected: sel,
+                }
             })
             .chain(decks.into_iter().map(|d| {
-                let sel = old_decks.iter().find(|(name, _)| name == &d).map(|(_, s)| *s).unwrap_or(false);
-                ContentItem { kind: ContentKind::Deck(d), selected: sel }
+                let sel = old_decks
+                    .iter()
+                    .find(|(name, _)| name == &d)
+                    .map(|(_, s)| *s)
+                    .unwrap_or(false);
+                ContentItem {
+                    kind: ContentKind::Deck(d),
+                    selected: sel,
+                }
             }))
             .collect();
     }

@@ -16,17 +16,24 @@ impl Config {
             let rc = cfg_dir.join("zhli").join("config");
             if let Ok(contents) = std::fs::read_to_string(&rc) {
                 let parsed = parse_config(&contents);
-                session_limit    = parsed.0;
+                session_limit = parsed.0;
                 db_path_override = parsed.1;
-                warnings         = parsed.2;
+                warnings = parsed.2;
             }
         }
 
-        Config { session_limit, db_path_override, warnings }
+        Config {
+            session_limit,
+            db_path_override,
+            warnings,
+        }
     }
 
     pub fn data_dir(&self) -> PathBuf {
-        self.db_path().parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+        self.db_path()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
     }
 
     pub fn db_path(&self) -> PathBuf {
@@ -43,9 +50,9 @@ impl Config {
 /// Parse the contents of a config file. Returns (session_limit, db_path_override, warnings).
 /// Extracted for testability.
 fn parse_config(contents: &str) -> (usize, Option<PathBuf>, Vec<String>) {
-    let mut session_limit    = 50usize;
+    let mut session_limit = 50usize;
     let mut db_path_override = None;
-    let mut warnings         = Vec::new();
+    let mut warnings = Vec::new();
 
     for line in contents.lines() {
         let line = line.trim();
@@ -187,7 +194,10 @@ mod tests {
 
     #[test]
     fn expand_tilde_relative_path_unchanged() {
-        assert_eq!(expand_tilde("relative/path"), PathBuf::from("relative/path"));
+        assert_eq!(
+            expand_tilde("relative/path"),
+            PathBuf::from("relative/path")
+        );
     }
 
     #[test]

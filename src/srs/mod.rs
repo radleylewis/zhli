@@ -1,26 +1,25 @@
-use chrono::{Utc, Duration};
-use anyhow::Result;
 use crate::db::{CardRow, Database};
+use anyhow::Result;
+use chrono::{Duration, Utc};
 
 // SM-2 scheduling parameters
-const INTERVAL_FIRST:    f64 = 1.0;  // days after first correct review
-const INTERVAL_SECOND:   f64 = 6.0;  // days after second correct review
-const INTERVAL_HARD:     f64 = 0.5;  // ~12 hours (grade 2: wrong but easy to recall)
-const INTERVAL_WRONG:    f64 = 0.1;  // ~2.5 hours (grade 1: incorrect)
+const INTERVAL_FIRST: f64 = 1.0; // days after first correct review
+const INTERVAL_SECOND: f64 = 6.0; // days after second correct review
+const INTERVAL_HARD: f64 = 0.5; // ~12 hours (grade 2: wrong but easy to recall)
+const INTERVAL_WRONG: f64 = 0.1; // ~2.5 hours (grade 1: incorrect)
 const INTERVAL_BLACKOUT: f64 = 0.04; // ~1 hour (grade 0: complete blank)
-const MIN_EASE_FACTOR:   f64 = 1.3;
+const MIN_EASE_FACTOR: f64 = 1.3;
 
 /// SM-2 quality grades (0-5)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewGrade {
-    Blackout  = 0,  // User has no idea
-    Wrong     = 1,  // incorrect but remembered on seeing answer
-    Hard      = 2,  // incorrect but easy to recall
-    Okay      = 3,  // correct with difficulty
-    Good      = 4,  // correct after hesitation
-    Perfect   = 5,  // perfect recall
+    Blackout = 0, // User has no idea
+    Wrong = 1,    // incorrect but remembered on seeing answer
+    Hard = 2,     // incorrect but easy to recall
+    Okay = 3,     // correct with difficulty
+    Good = 4,     // correct after hesitation
+    Perfect = 5,  // perfect recall
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CardDirection {
@@ -33,48 +32,48 @@ pub enum CardDirection {
 impl CardDirection {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::ZhToPinyin  => "zh_to_pinyin",
-            Self::ZhToEn      => "zh_to_en",
-            Self::EnToZh      => "en_to_zh",
-            Self::PinyinToZh  => "pinyin_to_zh",
+            Self::ZhToPinyin => "zh_to_pinyin",
+            Self::ZhToEn => "zh_to_en",
+            Self::EnToZh => "en_to_zh",
+            Self::PinyinToZh => "pinyin_to_zh",
         }
     }
 
     pub fn from_str(s: &str) -> Self {
         match s {
             "zh_to_pinyin" => Self::ZhToPinyin,
-            "zh_to_en"     => Self::ZhToEn,
-            "en_to_zh"     => Self::EnToZh,
+            "zh_to_en" => Self::ZhToEn,
+            "en_to_zh" => Self::EnToZh,
             "pinyin_to_zh" => Self::PinyinToZh,
-            _              => Self::PinyinToZh,
+            _ => Self::PinyinToZh,
         }
     }
 
     pub fn from_str_opt(s: &str) -> Option<Self> {
         match s.trim() {
             "zh_to_pinyin" => Some(Self::ZhToPinyin),
-            "zh_to_en"     => Some(Self::ZhToEn),
-            "en_to_zh"     => Some(Self::EnToZh),
+            "zh_to_en" => Some(Self::ZhToEn),
+            "en_to_zh" => Some(Self::EnToZh),
             "pinyin_to_zh" => Some(Self::PinyinToZh),
-            _              => None,
+            _ => None,
         }
     }
 
     pub fn prompt_label(&self) -> &'static str {
         match self {
-            Self::ZhToPinyin  => "Write the Pinyin",
-            Self::ZhToEn      => "Write the English meaning",
-            Self::EnToZh      => "Write the Chinese (Hanzi)",
-            Self::PinyinToZh  => "Write the Chinese (Hanzi)",
+            Self::ZhToPinyin => "Write the Pinyin",
+            Self::ZhToEn => "Write the English meaning",
+            Self::EnToZh => "Write the Chinese (Hanzi)",
+            Self::PinyinToZh => "Write the Chinese (Hanzi)",
         }
     }
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::ZhToPinyin  => "Chinese → Pinyin",
-            Self::ZhToEn      => "Chinese → English",
-            Self::EnToZh      => "English → Chinese",
-            Self::PinyinToZh  => "Pinyin → Chinese",
+            Self::ZhToPinyin => "Chinese → Pinyin",
+            Self::ZhToEn => "Chinese → English",
+            Self::EnToZh => "English → Chinese",
+            Self::PinyinToZh => "Pinyin → Chinese",
         }
     }
 }
@@ -128,7 +127,7 @@ pub fn sm2_schedule(card: &CardRow, grade: ReviewGrade) -> Sm2Result {
 /// Pinyin grading helpers
 pub fn strip_tones(pinyin: &str) -> String {
     let toned = "āáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜ";
-    let base   = "aaaaeeeeiiiioooouuuuüüüü";
+    let base = "aaaaeeeeiiiioooouuuuüüüü";
     let base_chars: Vec<char> = base.chars().collect();
     let mut out = String::new();
     for ch in pinyin.chars() {
@@ -145,7 +144,10 @@ pub fn strip_tones(pinyin: &str) -> String {
 }
 
 pub fn normalize_pinyin(s: &str) -> String {
-    strip_tones(s).split_whitespace().collect::<Vec<_>>().join("")
+    strip_tones(s)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 /// Convert a single syllable like "hao3" → "hǎo", "zhong1" → "zhōng".
@@ -154,17 +156,19 @@ fn numbered_syllable_to_toned(syl: &str) -> String {
     let s = syl.trim();
     let last = match s.chars().last() {
         Some(c) => c,
-        None    => return s.to_string(),
+        None => return s.to_string(),
     };
     let (base, tone): (&str, u8) = match last {
-        '1' => (&s[..s.len()-1], 1),
-        '2' => (&s[..s.len()-1], 2),
-        '3' => (&s[..s.len()-1], 3),
-        '4' => (&s[..s.len()-1], 4),
-        '5' => (&s[..s.len()-1], 0),
-        _   => (s, 0),
+        '1' => (&s[..s.len() - 1], 1),
+        '2' => (&s[..s.len() - 1], 2),
+        '3' => (&s[..s.len() - 1], 3),
+        '4' => (&s[..s.len() - 1], 4),
+        '5' => (&s[..s.len() - 1], 0),
+        _ => (s, 0),
     };
-    if tone == 0 { return base.replace('v', "ü"); }
+    if tone == 0 {
+        return base.replace('v', "ü");
+    }
 
     // Normalise ü written as 'v'
     let base = base.replace('v', "ü");
@@ -172,25 +176,47 @@ fn numbered_syllable_to_toned(syl: &str) -> String {
 
     // Placement rules: a/e first, then 'o' in 'ou', then last vowel
     let vowels = ['a', 'e', 'i', 'o', 'u', 'ü'];
-    let mark_pos = chars.iter().position(|&c| c == 'a' || c == 'e')
-        .or_else(|| {
-            chars.windows(2).position(|w| w[0] == 'o' && w[1] == 'u')
-        })
+    let mark_pos = chars
+        .iter()
+        .position(|&c| c == 'a' || c == 'e')
+        .or_else(|| chars.windows(2).position(|w| w[0] == 'o' && w[1] == 'u'))
         .or_else(|| chars.iter().rposition(|c| vowels.contains(c)));
 
-    let Some(pos) = mark_pos else { return base; };
-
-    let toned_char = match (chars[pos], tone) {
-        ('a', 1) => 'ā', ('a', 2) => 'á', ('a', 3) => 'ǎ', ('a', 4) => 'à',
-        ('e', 1) => 'ē', ('e', 2) => 'é', ('e', 3) => 'ě', ('e', 4) => 'è',
-        ('i', 1) => 'ī', ('i', 2) => 'í', ('i', 3) => 'ǐ', ('i', 4) => 'ì',
-        ('o', 1) => 'ō', ('o', 2) => 'ó', ('o', 3) => 'ǒ', ('o', 4) => 'ò',
-        ('u', 1) => 'ū', ('u', 2) => 'ú', ('u', 3) => 'ǔ', ('u', 4) => 'ù',
-        ('ü', 1) => 'ǖ', ('ü', 2) => 'ǘ', ('ü', 3) => 'ǚ', ('ü', 4) => 'ǜ',
-        (c, _)   => c,
+    let Some(pos) = mark_pos else {
+        return base;
     };
 
-    chars.iter().enumerate()
+    let toned_char = match (chars[pos], tone) {
+        ('a', 1) => 'ā',
+        ('a', 2) => 'á',
+        ('a', 3) => 'ǎ',
+        ('a', 4) => 'à',
+        ('e', 1) => 'ē',
+        ('e', 2) => 'é',
+        ('e', 3) => 'ě',
+        ('e', 4) => 'è',
+        ('i', 1) => 'ī',
+        ('i', 2) => 'í',
+        ('i', 3) => 'ǐ',
+        ('i', 4) => 'ì',
+        ('o', 1) => 'ō',
+        ('o', 2) => 'ó',
+        ('o', 3) => 'ǒ',
+        ('o', 4) => 'ò',
+        ('u', 1) => 'ū',
+        ('u', 2) => 'ú',
+        ('u', 3) => 'ǔ',
+        ('u', 4) => 'ù',
+        ('ü', 1) => 'ǖ',
+        ('ü', 2) => 'ǘ',
+        ('ü', 3) => 'ǚ',
+        ('ü', 4) => 'ǜ',
+        (c, _) => c,
+    };
+
+    chars
+        .iter()
+        .enumerate()
         .map(|(i, &c)| if i == pos { toned_char } else { c })
         .collect()
 }
@@ -218,17 +244,21 @@ pub fn numbered_to_toned(s: &str) -> String {
     if !current.trim().is_empty() {
         syllables.push(current.trim().to_string());
     }
-    syllables.iter().map(|syl| numbered_syllable_to_toned(syl)).collect::<Vec<_>>().join(" ")
+    syllables
+        .iter()
+        .map(|syl| numbered_syllable_to_toned(syl))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn normalize_english(s: &str) -> String {
     s.to_lowercase()
-     .chars()
-     .filter(|c| c.is_alphanumeric() || c.is_whitespace())
-     .collect::<String>()
-     .split_whitespace()
-     .collect::<Vec<_>>()
-     .join(" ")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Grade a written answer.
@@ -259,7 +289,8 @@ pub fn grade_answer(direction: &CardDirection, card: &CardRow, answer: &str) -> 
         CardDirection::ZhToEn => {
             let given = normalize_english(answer);
             // Accept /, comma, semicolon, and Chinese enumeration comma as separators
-            let variants: Vec<String> = card.english
+            let variants: Vec<String> = card
+                .english
                 .split(['/', ',', ';', '、'])
                 .map(|v| normalize_english(v.trim()))
                 .filter(|v| !v.is_empty())
@@ -268,7 +299,9 @@ pub fn grade_answer(direction: &CardDirection, card: &CardRow, answer: &str) -> 
             if variants.iter().any(|v| v == &given) {
                 (1.0, "✓ Correct!".to_string())
             } else if !given.is_empty()
-                && variants.iter().any(|v| v.contains(given.as_str()) || given.contains(v.as_str()))
+                && variants
+                    .iter()
+                    .any(|v| v.contains(given.as_str()) || given.contains(v.as_str()))
             {
                 (0.6, "~ Partially correct".to_string())
             } else {
@@ -289,7 +322,13 @@ pub fn grade_answer(direction: &CardDirection, card: &CardRow, answer: &str) -> 
 /// Apply a review to the database
 pub fn apply_review(db: &Database, card: &CardRow, grade: ReviewGrade, time_ms: u64) -> Result<()> {
     let result = sm2_schedule(card, grade);
-    db.update_card_srs(card.id, result.ease_factor, result.interval_days, result.repetitions, &result.due_at)?;
+    db.update_card_srs(
+        card.id,
+        result.ease_factor,
+        result.interval_days,
+        result.repetitions,
+        &result.due_at,
+    )?;
     db.record_review(card.id, grade as i32, time_ms)?;
     Ok(())
 }
@@ -300,18 +339,31 @@ mod tests {
 
     fn card(ef: f64, interval: f64, reps: i32) -> CardRow {
         CardRow {
-            id: 1, word_id: 1, direction: "zh_to_en".into(),
-            ease_factor: ef, interval_days: interval, repetitions: reps,
-            hanzi: "你好".into(), pinyin: "nǐ hǎo".into(),
-            english: "hello".into(), level: 1,
+            id: 1,
+            word_id: 1,
+            direction: "zh_to_en".into(),
+            ease_factor: ef,
+            interval_days: interval,
+            repetitions: reps,
+            hanzi: "你好".into(),
+            pinyin: "nǐ hǎo".into(),
+            english: "hello".into(),
+            level: 1,
         }
     }
 
     fn make_card(hanzi: &str, pinyin: &str, english: &str) -> CardRow {
         CardRow {
-            id: 1, word_id: 1, direction: "zh_to_en".into(),
-            ease_factor: 2.5, interval_days: 1.0, repetitions: 1,
-            hanzi: hanzi.into(), pinyin: pinyin.into(), english: english.into(), level: 1,
+            id: 1,
+            word_id: 1,
+            direction: "zh_to_en".into(),
+            ease_factor: 2.5,
+            interval_days: 1.0,
+            repetitions: 1,
+            hanzi: hanzi.into(),
+            pinyin: pinyin.into(),
+            english: english.into(),
+            level: 1,
         }
     }
 
@@ -350,7 +402,11 @@ mod tests {
     fn sm2_interval_floor_after_mature_card_with_low_ef() {
         // Even with EF at the floor, interval should never go below 1 day on a correct answer
         let r = sm2_schedule(&card(MIN_EASE_FACTOR, 1.0, 5), ReviewGrade::Good);
-        assert!(r.interval_days >= 1.0, "interval dropped below 1 day: {}", r.interval_days);
+        assert!(
+            r.interval_days >= 1.0,
+            "interval dropped below 1 day: {}",
+            r.interval_days
+        );
     }
 
     // ── SM-2: failure grades ──────────────────────────────────────────────────
@@ -381,10 +437,16 @@ mod tests {
     fn sm2_failure_intervals_are_ordered() {
         let c = card(2.5, 21.0, 5);
         let blackout = sm2_schedule(&c, ReviewGrade::Blackout).interval_days;
-        let wrong    = sm2_schedule(&c, ReviewGrade::Wrong).interval_days;
-        let hard     = sm2_schedule(&c, ReviewGrade::Hard).interval_days;
-        assert!(blackout < wrong, "blackout ({blackout}) should be shorter than wrong ({wrong})");
-        assert!(wrong < hard,    "wrong ({wrong}) should be shorter than hard ({hard})");
+        let wrong = sm2_schedule(&c, ReviewGrade::Wrong).interval_days;
+        let hard = sm2_schedule(&c, ReviewGrade::Hard).interval_days;
+        assert!(
+            blackout < wrong,
+            "blackout ({blackout}) should be shorter than wrong ({wrong})"
+        );
+        assert!(
+            wrong < hard,
+            "wrong ({wrong}) should be shorter than hard ({hard})"
+        );
     }
 
     // ── SM-2: ease factor ─────────────────────────────────────────────────────
@@ -392,21 +454,33 @@ mod tests {
     #[test]
     fn sm2_perfect_raises_ef() {
         let r = sm2_schedule(&card(2.5, 1.0, 1), ReviewGrade::Perfect);
-        assert!(r.ease_factor > 2.5, "EF should increase on Perfect: {}", r.ease_factor);
+        assert!(
+            r.ease_factor > 2.5,
+            "EF should increase on Perfect: {}",
+            r.ease_factor
+        );
     }
 
     #[test]
     fn sm2_good_leaves_ef_nearly_unchanged() {
         // Grade 4 (Good): ef += 0.1 - 1*(0.08 + 1*0.02) = 0.1 - 0.10 = 0.0
         let r = sm2_schedule(&card(2.5, 1.0, 1), ReviewGrade::Good);
-        assert!((r.ease_factor - 2.5).abs() < 0.001, "EF should be ~2.5 on Good: {}", r.ease_factor);
+        assert!(
+            (r.ease_factor - 2.5).abs() < 0.001,
+            "EF should be ~2.5 on Good: {}",
+            r.ease_factor
+        );
     }
 
     #[test]
     fn sm2_okay_decreases_ef() {
         // Grade 3 (Okay): ef += 0.1 - 2*(0.08 + 2*0.02) = 0.1 - 0.24 = -0.14
         let r = sm2_schedule(&card(2.5, 1.0, 1), ReviewGrade::Okay);
-        assert!(r.ease_factor < 2.5, "EF should decrease on Okay: {}", r.ease_factor);
+        assert!(
+            r.ease_factor < 2.5,
+            "EF should decrease on Okay: {}",
+            r.ease_factor
+        );
         assert!((r.ease_factor - 2.36).abs() < 0.001);
     }
 
@@ -415,7 +489,11 @@ mod tests {
         let mut c = card(1.4, 0.0, 0);
         for _ in 0..20 {
             let r = sm2_schedule(&c, ReviewGrade::Blackout);
-            assert!(r.ease_factor >= MIN_EASE_FACTOR, "EF dipped below floor: {}", r.ease_factor);
+            assert!(
+                r.ease_factor >= MIN_EASE_FACTOR,
+                "EF dipped below floor: {}",
+                r.ease_factor
+            );
             c.ease_factor = r.ease_factor;
         }
     }
@@ -430,18 +508,21 @@ mod tests {
         assert_eq!(r1.interval_days, INTERVAL_FIRST);
         assert_eq!(r1.repetitions, 1);
         c.interval_days = r1.interval_days;
-        c.ease_factor   = r1.ease_factor;
-        c.repetitions   = r1.repetitions;
+        c.ease_factor = r1.ease_factor;
+        c.repetitions = r1.repetitions;
 
         let r2 = sm2_schedule(&c, ReviewGrade::Good);
         assert_eq!(r2.interval_days, INTERVAL_SECOND);
         assert_eq!(r2.repetitions, 2);
         c.interval_days = r2.interval_days;
-        c.ease_factor   = r2.ease_factor;
-        c.repetitions   = r2.repetitions;
+        c.ease_factor = r2.ease_factor;
+        c.repetitions = r2.repetitions;
 
         let r3 = sm2_schedule(&c, ReviewGrade::Good);
-        assert!(r3.interval_days > INTERVAL_SECOND, "3rd correct should give > 6 days");
+        assert!(
+            r3.interval_days > INTERVAL_SECOND,
+            "3rd correct should give > 6 days"
+        );
         assert_eq!(r3.repetitions, 3);
     }
 

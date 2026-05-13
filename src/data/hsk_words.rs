@@ -155,7 +155,6 @@ pub static HSK_WORDS: [(&str, &str, &str, u8); 1001] = [
     ("昨天", "zuótiān", "yesterday", 1),
     ("坐", "zuò", "sit/travel by", 1),
     ("做", "zuò", "do/make", 1),
-
     // HSK 2 - selected words
     ("把", "bǎ", "handle/take", 2),
     ("班", "bān", "class/shift", 2),
@@ -303,7 +302,6 @@ pub static HSK_WORDS: [(&str, &str, &str, u8); 1001] = [
     ("走", "zǒu", "walk/go", 2),
     ("最", "zuì", "most/-est", 2),
     ("左边", "zuǒbiān", "left side", 2),
-
     // HSK 3 - selected words
     ("阿姨", "āyí", "aunt/auntie", 3),
     ("啊", "a", "interjection particle", 3),
@@ -537,7 +535,6 @@ pub static HSK_WORDS: [(&str, &str, &str, u8); 1001] = [
     ("字典", "zìdiǎn", "dictionary", 3),
     ("总是", "zǒngshì", "always", 3),
     ("嘴", "zuǐ", "mouth", 3),
-
     // HSK 4 - selected words
     ("爱情", "àiqíng", "love/romance", 4),
     ("安排", "ānpái", "arrange/plan", 4),
@@ -740,7 +737,6 @@ pub static HSK_WORDS: [(&str, &str, &str, u8); 1001] = [
     ("自信", "zìxìn", "confident/self-confidence", 4),
     ("总结", "zǒngjié", "summarize/summary", 4),
     ("作者", "zuòzhě", "author/writer", 4),
-
     // HSK 5 - selected words
     ("版权", "bǎnquán", "copyright", 5),
     ("本质", "běnzhì", "essence/nature", 5),
@@ -892,9 +888,13 @@ pub static HSK_WORDS: [(&str, &str, &str, u8); 1001] = [
     ("自然", "zìrán", "nature/natural", 5),
     ("综合", "zōnghé", "comprehensive/synthesize", 5),
     ("作用", "zuòyòng", "function/role", 5),
-
     // HSK 6 - selected words
-    ("爱不释手", "ài bù shì shǒu", "be too fond of sth to part with it", 6),
+    (
+        "爱不释手",
+        "ài bù shì shǒu",
+        "be too fond of sth to part with it",
+        6,
+    ),
     ("暧昧", "àimèi", "ambiguous/equivocal", 6),
     ("按时", "ànshí", "on time/punctually", 6),
     ("悲剧", "bēijù", "tragedy", 6),
