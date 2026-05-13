@@ -5,6 +5,7 @@ edition = "2021"
 description = "ZHLI — Command Line Chinese Trainer with spaced repetition"
 authors = ["Radley E. Sidwell-Lewis"]
 license = "GPL-3.0-only"
+repository = "https://github.com/radleylewis/zhli"
 
 [[bin]]
 name = "zhli"
@@ -28,3 +29,8 @@ open = "5"
 libc = "0.2"
 ureq = "2"
 scraper = "0.21"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
