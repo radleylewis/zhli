@@ -1,6 +1,6 @@
 [package]
 name = "zhli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "ZHLI — Command Line Chinese Trainer with spaced repetition"
 authors = ["Radley E. Sidwell-Lewis"]
@@ -18,8 +18,13 @@ chrono = "0.4"
 anyhow = "1"
 dirs = "5"
 rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 unicode-width = "0.1"
 arboard = "3"
 open = "5"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 ureq = "2"
 scraper = "0.21"

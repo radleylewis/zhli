@@ -1,6 +1,6 @@
 # 中 ZHLI — Command Line Chinese Trainer
 
-**Version 0.1.0**
+**Version 0.2.0**
 
 A terminal-based flashcard app for learning HSK 1–6 Chinese vocabulary using the SM-2 spaced repetition algorithm. All data is stored locally in SQLite — no account, no internet required for core study.
 
@@ -8,15 +8,19 @@ A terminal-based flashcard app for learning HSK 1–6 Chinese vocabulary using t
 
 ## Features
 
-- HSK levels 1–6 (~5 000 vocabulary cards)
-- Four study directions: Chinese→Pinyin, Chinese→English, English→Chinese, Pinyin→Chinese
+- HSK levels 1–6 (~5 000 vocabulary cards, four study directions each)
 - SM-2 spaced repetition scheduling with per-card ease factor
 - Numbered pinyin input (`hao3` → `hǎo`) with partial-credit tone grading
-- Custom word decks with online MDBG dictionary lookup
-- Stats dashboard: streak, retention, per-level progress, weakest words, 7-day activity
+- Custom word decks — a word can belong to multiple decks simultaneously
+- HSK words added to a deck remain visible in their HSK level
+- Online MDBG dictionary lookup for adding new words
+- Edit, suspend/unsuspend, and delete custom words from the search screen
+- Stats dashboard: streak, retention, per-level/per-deck progress, weakest words, 7-day activity chart, 12-week activity heatmap
+- Export custom words to JSON; import from any compatible JSON file
 - Vim-style navigation (`j`/`k`, `gg`/`G`, `:q`, `:q!`)
 - Clipboard yank and browser dictionary lookup during review
-- Study mode and content selection persisted across sessions
+- Study mode, content selection, and deck selection persisted across sessions
+- RC file for custom database path and session size
 
 ---
 
@@ -33,19 +37,17 @@ A terminal-based flashcard app for learning HSK 1–6 Chinese vocabulary using t
 ### Arch Linux
 
 ```bash
-# Install Rust via rustup (recommended) or pacman
 sudo pacman -S rustup
 rustup default stable
 
-# Clipboard dependencies (pick one depending on your display server)
+# Clipboard dependencies (pick one)
 sudo pacman -S xclip          # X11
 sudo pacman -S wl-clipboard   # Wayland
 
-# Build-time XCB headers (needed to compile the clipboard crate)
+# Build-time XCB headers
 sudo pacman -S libxcb
 
-# Clone and build
-git clone https://github.com/your-username/zhli.git
+git clone https://github.com/radleylewis/zhli.git
 cd zhli
 cargo build --release
 ```
@@ -53,18 +55,14 @@ cargo build --release
 ### Ubuntu / Debian
 
 ```bash
-# Install Rust via rustup
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 
-# Clipboard and build-time XCB headers
 sudo apt install xclip libxcb1-dev libxcb-render0-dev \
                  libxcb-shape0-dev libxcb-xfixes0-dev
-# Wayland alternative:
-# sudo apt install wl-clipboard
+# Wayland: sudo apt install wl-clipboard
 
-# Clone and build
-git clone https://github.com/your-username/zhli.git
+git clone https://github.com/radleylewis/zhli.git
 cd zhli
 cargo build --release
 ```
@@ -72,14 +70,10 @@ cargo build --release
 ### macOS
 
 ```bash
-# Install Rust via rustup
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 
-# No extra clipboard dependencies — macOS provides native clipboard access
-
-# Clone and build
-git clone https://github.com/your-username/zhli.git
+git clone https://github.com/radleylewis/zhli.git
 cd zhli
 cargo build --release
 ```
@@ -89,21 +83,37 @@ cargo build --release
 ## Running
 
 ```bash
-# Run the compiled binary
 ./target/release/zhli
-
-# Or run directly with cargo
+# or
 cargo run --release
 ```
 
-The app creates its database on first launch and seeds all HSK 1–6 words automatically.
+The app creates its database on first launch and seeds all HSK 1–6 words automatically. Existing databases from earlier versions are upgraded automatically on first run.
 
-**Data location:**
+**Default data location:**
 
 | Platform | Path |
 |----------|------|
 | Linux    | `~/.local/share/zhli/data.db` |
 | macOS    | `~/Library/Application Support/zhli/data.db` |
+
+---
+
+## Configuration
+
+Create `~/.config/zhli/config` (plain text, `key = value`):
+
+```
+# Custom database location
+db_path = ~/Documents/zhli/data.db
+
+# Cards per review session (default: 50)
+session_limit = 100
+```
+
+Lines starting with `#` are ignored. Both keys are optional — omit either to use the default.
+
+Any unrecognised key will produce a warning shown in the status bar on startup.
 
 ---
 
@@ -129,13 +139,16 @@ The app creates its database on first launch and seeds all HSK 1–6 words autom
 | Option | Description |
 |--------|-------------|
 | Study / Review Cards | Choose mode and content, then start a session |
-| Stats & Report Card | View progress, streaks, and weakest words |
-| Add Word to Deck | Create a custom deck and add words |
-| Search & Browse | Search all words, add to deck, or delete |
+| Stats & Report Card | View progress, streaks, weakest words, and 12-week heatmap |
+| Add Word to Deck | Create or manage custom decks |
+| Search & Browse | Search all words, manage deck membership, edit, suspend |
+| Suspended Words | Review and unsuspend words |
+| Export Custom Words | Save custom words + decks to `export.json` in the data directory |
+| Import from JSON | Load words from a previously exported JSON file |
 | About / Rules / Algo | App guide, pinyin rules, SM-2 explanation |
 | Clear Custom Words | Delete all custom words and decks |
 | Reset All Progress | Reset all SRS state to zero |
-| Quit | Exit the app |
+| Quit | Exit |
 
 ---
 
@@ -159,6 +172,8 @@ The app creates its database on first launch and seeds all HSK 1–6 words autom
 | `n` | Deselect all |
 | `Enter` | Start session |
 
+Deck words bypass the SRS due-date filter — all cards are always available for practice. HSK words are still subject to normal scheduling even if they belong to a deck.
+
 ---
 
 #### Prompt phase
@@ -168,9 +183,9 @@ The app creates its database on first launch and seeds all HSK 1–6 words autom
 | Type | Enter your answer |
 | `Enter` | Submit and check |
 | `Backspace` | Delete last character |
-| `Esc` | Skip card (counts as Wrong) |
+| `Esc` | Skip card |
 
-**Pinyin input:** tone numbers are accepted — type `ni3hao3` or `ni3 hao3` and it converts to `nǐ hǎo`. Toned diacritics can also be typed or pasted directly. A tone guide is shown on-screen.
+**Pinyin input:** tone numbers are accepted — type `ni3hao3` or `ni3 hao3` and it converts to `nǐ hǎo`. Toned diacritics can also be typed or pasted directly.
 
 | Tone | Mark | Type | Sound |
 |------|------|------|-------|
@@ -218,19 +233,26 @@ The **Ease Factor (EF)** starts at 2.5 and adjusts based on grades. Higher EF = 
 | `r` | Refresh |
 | `Esc` / `q` | Return to menu |
 
-Shows: daily streak, reviews today, overall retention, cards due, per-level progress (seen / mature), 10 weakest words by ease factor, and a 7-day review activity chart.
-
 ---
 
 ### Custom Decks
 
 1. Go to **Add Word to Deck** and select or create a deck
-2. Type in the search box to find words by hanzi, pinyin, or English
+2. In the **Search & Browse** screen, type to find words by hanzi, pinyin, or English
 3. Navigate results with `↑`/`↓`, press `Enter` to add the highlighted word to your deck
-4. Press `/` to search the MDBG online dictionary for words not in the local database
-5. Press `D` on a result to delete a custom word permanently
+4. A word can be added to multiple decks — existing entries are reused, not duplicated
+5. Press `/` to search the MDBG online dictionary for words not in the local database
 
-Words in a custom deck are always available for review (no due-date filter applies to deck words).
+**Actions in Search & Browse:**
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Add highlighted word to current deck |
+| `E` | Edit the highlighted custom word (hanzi, pinyin, english) |
+| `S` | Toggle suspend / unsuspend for highlighted word |
+| `R` | Remove highlighted word from current deck (word is kept) |
+| `D` | Delete highlighted custom word permanently |
+| `/` | Open online dictionary search |
 
 ---
 
@@ -244,8 +266,29 @@ From the Search screen, press `/` to open the online dictionary lookup. Searches
 | `↑`/`↓` | Navigate results |
 | `/` | Filter current results |
 | `Enter` on result | Add word to deck |
-| `i` | Open entry in browser |
 | `Esc` | Back |
+
+---
+
+## Export and Import
+
+**Export Custom Words** (menu item 6) writes all your custom words and their deck assignments to `export.json` in the data directory (same folder as the database). The file path is shown in the status bar after export.
+
+**Import from JSON** (menu item 7) reads a `export.json`-format file. The path input is pre-filled with the default export location — edit it to load any compatible file.
+
+Format:
+
+```json
+[
+  {"hanzi": "你好", "pinyin": "nǐ hǎo", "english": "hello", "decks": []},
+  {"hanzi": "再见", "pinyin": "zài jiàn", "english": "goodbye", "decks": ["Travel"]}
+]
+```
+
+- Words that already exist (same hanzi + pinyin) are skipped and counted as "skipped"
+- Words that conflict with built-in HSK entries are also skipped
+- Deck names are created automatically if they do not already exist
+- SRS state starts fresh for imported words
 
 ---
 
@@ -253,10 +296,10 @@ From the Search screen, press `/` to open the online dictionary lookup. Searches
 
 ```bash
 # Linux
-rm -rf ~/.local/share/zhli
+rm -rf ~/.local/share/zhli ~/.config/zhli
 
 # macOS
-rm -rf ~/Library/Application\ Support/zhli
+rm -rf ~/Library/Application\ Support/zhli ~/.config/zhli
 ```
 
 ---

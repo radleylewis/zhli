@@ -1,7 +1,7 @@
 // HSK Vocabulary Data - Levels 1-6
 // Format: (hanzi, pinyin_with_tones, english, level)
 
-pub static HSK_WORDS: &[(&str, &str, &str, u8)] = &[
+pub static HSK_WORDS: [(&str, &str, &str, u8); 1001] = [
     // HSK 1 - 150 words
     ("爱", "ài", "love", 1),
     ("八", "bā", "eight", 1),
