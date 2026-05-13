@@ -63,6 +63,7 @@ pub fn render(f: &mut Frame, app: &App) {
         Screen::About           => menu::render_about(f, area),
         Screen::SuspendedWords  => menu::render_suspended_words(f, app, area),
         Screen::Confirm(ref action) => menu::render_confirm(f, action, area),
+        Screen::ImportFile      => menu::render_import_file(f, app, area),
     }
 
     // Bottom bar: command mode takes priority over status message

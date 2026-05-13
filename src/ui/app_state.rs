@@ -26,6 +26,7 @@ pub enum Screen {
     About,
     SuspendedWords,
     Confirm(ClearAction),
+    ImportFile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,10 +120,13 @@ pub struct App {
     pub suspended_cursor: usize,
     // Activity heatmap (ISO date → review count)
     pub heatmap: std::collections::HashMap<String, i64>,
+    // Export / Import
+    pub export_path: std::path::PathBuf,
+    pub import_path: String,
 }
 
 impl App {
-    pub fn new(db: Database, session_limit: usize) -> Self {
+    pub fn new(db: Database, session_limit: usize, data_dir: std::path::PathBuf) -> Self {
         let mode_cursor = db.load_setting("mode_cursor").ok().flatten()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(0)
@@ -154,6 +158,8 @@ impl App {
 
         let decks = db.list_decks().unwrap_or_default();
         let heatmap = db.heatmap_data(84).unwrap_or_default();
+        let export_path = data_dir.join("export.json");
+        let import_path = export_path.display().to_string();
 
         let content_items = (1u8..=6)
             .map(|l| ContentItem {
@@ -219,6 +225,8 @@ impl App {
             suspended_words: vec![],
             suspended_cursor: 0,
             heatmap,
+            export_path,
+            import_path,
         }
     }
 

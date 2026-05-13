@@ -35,7 +35,7 @@ pub(super) fn render_review(f: &mut Frame, app: &App, area: Rect) {
     // Progress bar + stats row
     let total = app.review_queue.len();
     let done  = app.current_card_idx;
-    let pct   = if total > 0 { done * 100 / total } else { 0 };
+    let pct   = (done * 100).checked_div(total).unwrap_or(0);
     let wrong = app.session_total.saturating_sub(app.session_correct);
     let prog_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -269,9 +269,7 @@ fn render_session_complete(f: &mut Frame, app: &App, area: Rect) {
     let popup = centered_rect(60, 55, area);
     f.render_widget(Clear, popup);
 
-    let accuracy = if app.session_total > 0 {
-        app.session_correct * 100 / app.session_total
-    } else { 0 };
+    let accuracy = (app.session_correct * 100).checked_div(app.session_total).unwrap_or(0);
     let wrong = app.session_total.saturating_sub(app.session_correct);
 
     let elapsed = app.session_start.map(|s| {

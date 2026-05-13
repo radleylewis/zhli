@@ -1,11 +1,10 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, BorderType, Clear, List, ListItem, Paragraph, Wrap},
 };
-use chrono::{Utc, Datelike};
 
 use crate::ui::app_state::{App, ClearAction, ContentKind};
 use crate::srs::CardDirection;
@@ -32,18 +31,14 @@ pub(super) fn render_main_menu(f: &mut Frame, app: &App, area: Rect) {
     ];
     f.render_widget(Paragraph::new(logo).alignment(Alignment::Center), chunks[0]);
 
-    // Split the middle row: menu on the left, heatmap on the right.
-    let mid = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(20), Constraint::Length(32)])
-        .split(chunks[1]);
-
     let items_data = [
         ("📚", "Study / Review Cards",    CYAN),
         ("📊", "Stats & Report Card",     GREEN),
         ("➕", "Add Word to Deck",        BLUE),
         ("🔍", "Search & Browse",         WHITE),
         ("💤", "Suspended Words",         YELLOW),
+        ("📤", "Export Custom Words",     BLUE),
+        ("📥", "Import from JSON",        BLUE),
         ("📖", "About / Rules / Algo",    ACCENT),
         ("🗑️", "Clear Custom Words",      WARN),
         ("⚠️", "Reset All Progress",      RED),
@@ -69,9 +64,7 @@ pub(super) fn render_main_menu(f: &mut Frame, app: &App, area: Rect) {
             .border_style(Style::default().fg(ACCENT))
             .title(" Menu ")
             .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)));
-    f.render_widget(list, mid[0]);
-
-    render_heatmap(f, app, mid[1]);
+    f.render_widget(list, chunks[1]);
 
     f.render_widget(
         Paragraph::new("↑↓ Navigate  •  Enter Select  •  Q Quit")
@@ -81,52 +74,6 @@ pub(super) fn render_main_menu(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_heatmap(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .title(" Activity ")
-        .title_style(Style::default().fg(GRAY))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(GRAY));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    // 12 weeks; align so rightmost column = current week.
-    let today = Utc::now().date_naive();
-    let days_since_monday = today.weekday().num_days_from_monday() as i64;
-    let this_monday = today - chrono::Duration::days(days_since_monday);
-    let start = this_monday - chrono::Duration::weeks(11);
-
-    let day_labels = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
-    let weeks: usize = 12;
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    for dow in 0..7usize {
-        let mut spans = vec![
-            Span::styled(format!("{} ", day_labels[dow]), Style::default().fg(GRAY)),
-        ];
-        for week in 0..weeks {
-            let date = start + chrono::Duration::days((week * 7 + dow) as i64);
-            if date > today {
-                spans.push(Span::raw("  "));
-                continue;
-            }
-            let key = date.format("%Y-%m-%d").to_string();
-            let count = app.heatmap.get(&key).copied().unwrap_or(0);
-            let color = match count {
-                0     => Color::Rgb(35, 45, 35),
-                1..=2 => Color::Rgb(0, 100, 40),
-                3..=6 => Color::Rgb(0, 170, 70),
-                _     => Color::Rgb(50, 230, 100),
-            };
-            spans.push(Span::styled("█ ", Style::default().fg(color)));
-        }
-        lines.push(Line::from(spans));
-    }
-
-    f.render_widget(Paragraph::new(lines), inner);
-}
 
 pub(super) fn render_mode_select(f: &mut Frame, app: &App, area: Rect) {
     let popup = centered_rect(65, 60, area);
@@ -425,6 +372,76 @@ pub(super) fn render_suspended_words(f: &mut Frame, app: &App, area: Rect) {
         .style(Style::default().fg(GRAY))
         .alignment(Alignment::Center);
     f.render_widget(footer, chunks[2]);
+}
+
+pub(super) fn render_import_file(f: &mut Frame, app: &App, area: Rect) {
+    let popup = centered_rect(65, 55, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" 📥  Import from JSON ")
+        .title_style(Style::default().fg(BLUE).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(BLUE))
+        .style(Style::default().bg(BG));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Min(2),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let desc = Paragraph::new(vec![
+        Line::from(Span::styled(
+            "Import custom words from a zhli JSON export.",
+            Style::default().fg(WHITE),
+        )),
+        Line::from(Span::styled(
+            "Existing words and HSK entries are skipped.",
+            Style::default().fg(GRAY),
+        )),
+    ]);
+    f.render_widget(desc, inner_layout[0]);
+
+    f.render_widget(
+        Paragraph::new("File path:").style(Style::default().fg(GRAY)),
+        inner_layout[1],
+    );
+
+    let path_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(CYAN));
+    let path_inner = path_block.inner(inner_layout[2]);
+    f.render_widget(path_block, inner_layout[2]);
+    f.render_widget(
+        Paragraph::new(app.import_path.as_str()).style(Style::default().fg(WHITE)),
+        path_inner,
+    );
+
+    let hint = Paragraph::new(vec![
+        Line::from(Span::styled(
+            "Format: [{\"hanzi\":\"…\",\"pinyin\":\"…\",\"english\":\"…\",\"decks\":[…]}, …]",
+            Style::default().fg(GRAY),
+        )),
+    ]);
+    f.render_widget(hint, inner_layout[3]);
+
+    f.render_widget(
+        Paragraph::new("Enter = Import   •   Esc = Cancel")
+            .style(Style::default().fg(GRAY))
+            .alignment(Alignment::Center),
+        inner_layout[4],
+    );
 }
 
 pub(super) fn render_confirm(f: &mut Frame, action: &ClearAction, area: Rect) {

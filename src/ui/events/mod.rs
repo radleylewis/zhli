@@ -46,7 +46,7 @@ pub fn handle_event(app: &mut App, event: Event) -> Result<bool> {
 
     let in_text_input = matches!(
         app.screen,
-        Screen::SearchDeck | Screen::AddCustomWord | Screen::EditWord
+        Screen::SearchDeck | Screen::AddCustomWord | Screen::EditWord | Screen::ImportFile
     ) || (matches!(app.screen, Screen::AddToDeck) && (app.creating_new_deck || app.renaming_deck));
 
     if !in_text_input && code == KeyCode::Char(':') {
@@ -69,6 +69,7 @@ pub fn handle_event(app: &mut App, event: Event) -> Result<bool> {
         Screen::About           => { menu::handle_about(app, code); false }
         Screen::SuspendedWords  => { menu::handle_suspended_words(app, code)?; false }
         Screen::Confirm(action) => { menu::handle_confirm(app, code, action)?; false }
+        Screen::ImportFile      => { menu::handle_import_file(app, code)?; false }
     };
 
     if app.screen != prev_screen {

@@ -20,6 +20,11 @@ pub(super) fn handle_add_to_deck(app: &mut App, code: KeyCode) -> Result<()> {
                         .get(app.deck_cursor.saturating_sub(1))
                         .cloned()
                         .unwrap_or_default();
+                    if new_name != old_name && app.available_decks.iter().any(|d| d == &new_name) {
+                        app.status_message = format!("A deck named '{new_name}' already exists.");
+                        app.status_set_at = Some(Instant::now());
+                        return Ok(());
+                    }
                     match app.db.rename_deck(&old_name, &new_name) {
                         Ok(()) => {
                             app.renaming_deck = false;

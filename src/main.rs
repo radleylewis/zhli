@@ -23,6 +23,9 @@ use ui::app_state::{App, Screen};
 use ui::events::handle_event;
 use ui::render::render;
 
+const STATUS_CLEAR_SECS: u64 = 3;
+const DICT_TIMEOUT_SECS: u64 = 15;
+
 fn main() -> Result<()> {
     let cfg = Config::load();
 
@@ -35,7 +38,13 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(db, cfg.session_limit);
+    let data_dir = cfg.data_dir();
+    let cfg_warnings = cfg.warnings.clone();
+    let mut app = App::new(db, cfg.session_limit, data_dir);
+    if !cfg_warnings.is_empty() {
+        app.status_message = format!("Config: {}", cfg_warnings.join("; "));
+        app.status_set_at = Some(std::time::Instant::now());
+    }
 
     loop {
         if app.should_suspend {
@@ -50,13 +59,13 @@ fn main() -> Result<()> {
             terminal.clear()?;
         }
 
-        if app.status_set_at.map(|t| t.elapsed().as_secs() >= 3).unwrap_or(false) {
+        if app.status_set_at.map(|t| t.elapsed().as_secs() >= STATUS_CLEAR_SECS).unwrap_or(false) {
             app.status_message.clear();
             app.status_set_at = None;
         }
 
         if app.dict_rx.is_some()
-            && app.dict_lookup_started.map(|s| s.elapsed().as_secs() > 15).unwrap_or(false)
+            && app.dict_lookup_started.map(|s| s.elapsed().as_secs() > DICT_TIMEOUT_SECS).unwrap_or(false)
         {
             app.dict_rx = None;
             app.dict_lookup_started = None;

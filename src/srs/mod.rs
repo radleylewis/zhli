@@ -307,7 +307,15 @@ mod tests {
         }
     }
 
-    // ── SM-2 ─────────────────────────────────────────────────────────────────
+    fn make_card(hanzi: &str, pinyin: &str, english: &str) -> CardRow {
+        CardRow {
+            id: 1, word_id: 1, direction: "zh_to_en".into(),
+            ease_factor: 2.5, interval_days: 1.0, repetitions: 1,
+            hanzi: hanzi.into(), pinyin: pinyin.into(), english: english.into(), level: 1,
+        }
+    }
+
+    // ── SM-2: correct grades ──────────────────────────────────────────────────
 
     #[test]
     fn sm2_first_correct_gives_one_day() {
@@ -326,8 +334,32 @@ mod tests {
     #[test]
     fn sm2_third_correct_multiplies_by_ef() {
         let r = sm2_schedule(&card(2.5, 6.0, 2), ReviewGrade::Good);
-        assert!((r.interval_days - 15.0).abs() < 0.1);
+        assert!((r.interval_days - 15.0).abs() < 0.01);
         assert_eq!(r.repetitions, 3);
+    }
+
+    #[test]
+    fn sm2_okay_is_minimum_passing_grade() {
+        // Grade::Okay (3) should advance the card just like Good or Perfect
+        let r = sm2_schedule(&card(2.5, 0.0, 0), ReviewGrade::Okay);
+        assert_eq!(r.repetitions, 1);
+        assert_eq!(r.interval_days, INTERVAL_FIRST);
+    }
+
+    #[test]
+    fn sm2_interval_floor_after_mature_card_with_low_ef() {
+        // Even with EF at the floor, interval should never go below 1 day on a correct answer
+        let r = sm2_schedule(&card(MIN_EASE_FACTOR, 1.0, 5), ReviewGrade::Good);
+        assert!(r.interval_days >= 1.0, "interval dropped below 1 day: {}", r.interval_days);
+    }
+
+    // ── SM-2: failure grades ──────────────────────────────────────────────────
+
+    #[test]
+    fn sm2_hard_resets_reps_and_sets_half_day_interval() {
+        let r = sm2_schedule(&card(2.5, 21.0, 5), ReviewGrade::Hard);
+        assert_eq!(r.repetitions, 0);
+        assert_eq!(r.interval_days, INTERVAL_HARD);
     }
 
     #[test]
@@ -338,8 +370,48 @@ mod tests {
     }
 
     #[test]
+    fn sm2_blackout_gives_shortest_interval() {
+        let r = sm2_schedule(&card(2.5, 21.0, 5), ReviewGrade::Blackout);
+        assert_eq!(r.repetitions, 0);
+        assert_eq!(r.interval_days, INTERVAL_BLACKOUT);
+        assert!(r.interval_days < INTERVAL_WRONG);
+    }
+
+    #[test]
+    fn sm2_failure_intervals_are_ordered() {
+        let c = card(2.5, 21.0, 5);
+        let blackout = sm2_schedule(&c, ReviewGrade::Blackout).interval_days;
+        let wrong    = sm2_schedule(&c, ReviewGrade::Wrong).interval_days;
+        let hard     = sm2_schedule(&c, ReviewGrade::Hard).interval_days;
+        assert!(blackout < wrong, "blackout ({blackout}) should be shorter than wrong ({wrong})");
+        assert!(wrong < hard,    "wrong ({wrong}) should be shorter than hard ({hard})");
+    }
+
+    // ── SM-2: ease factor ─────────────────────────────────────────────────────
+
+    #[test]
+    fn sm2_perfect_raises_ef() {
+        let r = sm2_schedule(&card(2.5, 1.0, 1), ReviewGrade::Perfect);
+        assert!(r.ease_factor > 2.5, "EF should increase on Perfect: {}", r.ease_factor);
+    }
+
+    #[test]
+    fn sm2_good_leaves_ef_nearly_unchanged() {
+        // Grade 4 (Good): ef += 0.1 - 1*(0.08 + 1*0.02) = 0.1 - 0.10 = 0.0
+        let r = sm2_schedule(&card(2.5, 1.0, 1), ReviewGrade::Good);
+        assert!((r.ease_factor - 2.5).abs() < 0.001, "EF should be ~2.5 on Good: {}", r.ease_factor);
+    }
+
+    #[test]
+    fn sm2_okay_decreases_ef() {
+        // Grade 3 (Okay): ef += 0.1 - 2*(0.08 + 2*0.02) = 0.1 - 0.24 = -0.14
+        let r = sm2_schedule(&card(2.5, 1.0, 1), ReviewGrade::Okay);
+        assert!(r.ease_factor < 2.5, "EF should decrease on Okay: {}", r.ease_factor);
+        assert!((r.ease_factor - 2.36).abs() < 0.001);
+    }
+
+    #[test]
     fn sm2_ef_floor_is_enforced() {
-        // Repeated blackouts should not push EF below MIN_EASE_FACTOR
         let mut c = card(1.4, 0.0, 0);
         for _ in 0..20 {
             let r = sm2_schedule(&c, ReviewGrade::Blackout);
@@ -348,10 +420,38 @@ mod tests {
         }
     }
 
+    // ── SM-2: full progression ────────────────────────────────────────────────
+
     #[test]
-    fn sm2_perfect_raises_ef() {
-        let r = sm2_schedule(&card(2.5, 1.0, 1), ReviewGrade::Perfect);
-        assert!(r.ease_factor > 2.5);
+    fn sm2_full_correct_progression() {
+        let mut c = card(2.5, 0.0, 0);
+
+        let r1 = sm2_schedule(&c, ReviewGrade::Good);
+        assert_eq!(r1.interval_days, INTERVAL_FIRST);
+        assert_eq!(r1.repetitions, 1);
+        c.interval_days = r1.interval_days;
+        c.ease_factor   = r1.ease_factor;
+        c.repetitions   = r1.repetitions;
+
+        let r2 = sm2_schedule(&c, ReviewGrade::Good);
+        assert_eq!(r2.interval_days, INTERVAL_SECOND);
+        assert_eq!(r2.repetitions, 2);
+        c.interval_days = r2.interval_days;
+        c.ease_factor   = r2.ease_factor;
+        c.repetitions   = r2.repetitions;
+
+        let r3 = sm2_schedule(&c, ReviewGrade::Good);
+        assert!(r3.interval_days > INTERVAL_SECOND, "3rd correct should give > 6 days");
+        assert_eq!(r3.repetitions, 3);
+    }
+
+    #[test]
+    fn sm2_failure_after_progress_restarts_reps() {
+        // Get to rep 3, then fail — should reset to 0
+        let mature = card(2.5, 15.0, 3);
+        let r = sm2_schedule(&mature, ReviewGrade::Wrong);
+        assert_eq!(r.repetitions, 0);
+        assert!(r.interval_days < INTERVAL_FIRST);
     }
 
     // ── Pinyin conversion ─────────────────────────────────────────────────────
@@ -367,6 +467,11 @@ mod tests {
     }
 
     #[test]
+    fn numbered_to_toned_no_space_multisyllable() {
+        assert_eq!(numbered_to_toned("ni3hao3"), "nǐ hǎo");
+    }
+
+    #[test]
     fn numbered_to_toned_v_becomes_u_umlaut() {
         assert_eq!(numbered_to_toned("lv4"), "lǜ");
         assert_eq!(numbered_to_toned("nv3"), "nǚ");
@@ -378,9 +483,27 @@ mod tests {
     }
 
     #[test]
+    fn numbered_to_toned_tone_placement_ou() {
+        // In "dou", tone goes on 'o' (ou rule)
+        assert_eq!(numbered_to_toned("dou4"), "dòu");
+    }
+
+    #[test]
+    fn numbered_to_toned_all_finals_for_e() {
+        assert_eq!(numbered_to_toned("he1"), "hē");
+        assert_eq!(numbered_to_toned("le2"), "lé");
+    }
+
+    #[test]
     fn strip_tones_removes_diacritics() {
         assert_eq!(strip_tones("nǐ hǎo"), "ni hao");
         assert_eq!(strip_tones("zhōng"), "zhong");
+        assert_eq!(strip_tones("ǖǘǚǜ"), "üüüü");
+    }
+
+    #[test]
+    fn strip_tones_preserves_non_pinyin() {
+        assert_eq!(strip_tones("hello123"), "hello123");
     }
 
     #[test]
@@ -389,15 +512,7 @@ mod tests {
         assert_eq!(normalize_pinyin("zhōng guó"), "zhongguo");
     }
 
-    // ── Grading ───────────────────────────────────────────────────────────────
-
-    fn make_card(hanzi: &str, pinyin: &str, english: &str) -> CardRow {
-        CardRow {
-            id: 1, word_id: 1, direction: "zh_to_en".into(),
-            ease_factor: 2.5, interval_days: 1.0, repetitions: 1,
-            hanzi: hanzi.into(), pinyin: pinyin.into(), english: english.into(), level: 1,
-        }
-    }
+    // ── Grading: ZhToPinyin ───────────────────────────────────────────────────
 
     #[test]
     fn grade_zh_to_pinyin_exact() {
@@ -407,18 +522,34 @@ mod tests {
     }
 
     #[test]
-    fn grade_zh_to_pinyin_numbered_accepted() {
+    fn grade_zh_to_pinyin_numbered_with_space_accepted() {
         let c = make_card("你好", "nǐ hǎo", "hello");
         let (score, _) = grade_answer(&CardDirection::ZhToPinyin, &c, "ni3 hao3");
         assert_eq!(score, 1.0);
     }
 
     #[test]
-    fn grade_zh_to_pinyin_wrong_tones_partial() {
+    fn grade_zh_to_pinyin_numbered_no_space_accepted() {
+        let c = make_card("你好", "nǐ hǎo", "hello");
+        let (score, _) = grade_answer(&CardDirection::ZhToPinyin, &c, "ni3hao3");
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
+    fn grade_zh_to_pinyin_wrong_tones_partial_credit() {
         let c = make_card("你好", "nǐ hǎo", "hello");
         let (score, _) = grade_answer(&CardDirection::ZhToPinyin, &c, "ni hao");
         assert_eq!(score, 0.6);
     }
+
+    #[test]
+    fn grade_zh_to_pinyin_wrong_syllables_is_zero() {
+        let c = make_card("你好", "nǐ hǎo", "hello");
+        let (score, _) = grade_answer(&CardDirection::ZhToPinyin, &c, "zai jian");
+        assert_eq!(score, 0.0);
+    }
+
+    // ── Grading: ZhToEn ──────────────────────────────────────────────────────
 
     #[test]
     fn grade_zh_to_en_exact() {
@@ -435,11 +566,48 @@ mod tests {
     }
 
     #[test]
-    fn grade_zh_to_en_accepts_variant() {
+    fn grade_zh_to_en_slash_variant_accepted() {
         let c = make_card("或者", "huò zhě", "or / either");
         let (score, _) = grade_answer(&CardDirection::ZhToEn, &c, "either");
         assert_eq!(score, 1.0);
     }
+
+    #[test]
+    fn grade_zh_to_en_semicolon_variant_accepted() {
+        let c = make_card("或者", "huò zhě", "or; either");
+        let (score, _) = grade_answer(&CardDirection::ZhToEn, &c, "either");
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
+    fn grade_zh_to_en_comma_variant_accepted() {
+        let c = make_card("或者", "huò zhě", "or, either");
+        let (score, _) = grade_answer(&CardDirection::ZhToEn, &c, "either");
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
+    fn grade_zh_to_en_punctuation_in_answer_stripped() {
+        let c = make_card("你好", "nǐ hǎo", "hello");
+        let (score, _) = grade_answer(&CardDirection::ZhToEn, &c, "Hello!");
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
+    fn grade_zh_to_en_wrong_is_zero() {
+        let c = make_card("你好", "nǐ hǎo", "hello");
+        let (score, _) = grade_answer(&CardDirection::ZhToEn, &c, "goodbye");
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn grade_zh_to_en_empty_answer_is_zero() {
+        let c = make_card("你好", "nǐ hǎo", "hello");
+        let (score, _) = grade_answer(&CardDirection::ZhToEn, &c, "");
+        assert_eq!(score, 0.0);
+    }
+
+    // ── Grading: EnToZh / PinyinToZh ─────────────────────────────────────────
 
     #[test]
     fn grade_en_to_zh_exact() {
@@ -452,6 +620,20 @@ mod tests {
     fn grade_en_to_zh_wrong() {
         let c = make_card("你好", "nǐ hǎo", "hello");
         let (score, _) = grade_answer(&CardDirection::EnToZh, &c, "再见");
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn grade_pinyin_to_zh_exact() {
+        let c = make_card("你好", "nǐ hǎo", "hello");
+        let (score, _) = grade_answer(&CardDirection::PinyinToZh, &c, "你好");
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
+    fn grade_pinyin_to_zh_wrong() {
+        let c = make_card("你好", "nǐ hǎo", "hello");
+        let (score, _) = grade_answer(&CardDirection::PinyinToZh, &c, "再见");
         assert_eq!(score, 0.0);
     }
 }

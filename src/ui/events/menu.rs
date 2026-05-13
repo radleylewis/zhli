@@ -4,16 +4,17 @@ use std::time::Instant;
 
 use crate::ui::app_state::{App, ClearAction, Screen};
 use crate::srs::CardDirection;
+use dirs;
 
 pub(super) fn handle_main_menu(app: &mut App, code: KeyCode) -> bool {
     match code {
         KeyCode::Up | KeyCode::Char('k')
             if app.menu_cursor > 0 => { app.menu_cursor -= 1; }
         KeyCode::Down | KeyCode::Char('j')
-            if app.menu_cursor < 8 => { app.menu_cursor += 1; }
+            if app.menu_cursor < 10 => { app.menu_cursor += 1; }
         KeyCode::Char('g')
             if app.last_char == Some('g') => { app.menu_cursor = 0; }
-        KeyCode::Char('G') => { app.menu_cursor = 8; }
+        KeyCode::Char('G') => { app.menu_cursor = 10; }
         KeyCode::Enter => {
             match app.menu_cursor {
                 0 => { app.screen = Screen::ModeSelect; }
@@ -52,10 +53,28 @@ pub(super) fn handle_main_menu(app: &mut App, code: KeyCode) -> bool {
                         }
                     }
                 }
-                5 => { app.screen = Screen::About; }
-                6 => { app.screen = Screen::Confirm(ClearAction::CustomWords); }
-                7 => { app.screen = Screen::Confirm(ClearAction::Progress); }
-                8 => { return true; }
+                5 => {
+                    match app.db.export_custom_words(&app.export_path) {
+                        Ok(n) => {
+                            app.status_message = format!(
+                                "Exported {n} word(s) → {}",
+                                app.export_path.display()
+                            );
+                        }
+                        Err(e) => {
+                            app.status_message = format!("Export failed: {e}");
+                        }
+                    }
+                    app.status_set_at = Some(Instant::now());
+                }
+                6 => {
+                    app.import_path = app.export_path.display().to_string();
+                    app.screen = Screen::ImportFile;
+                }
+                7 => { app.screen = Screen::About; }
+                8 => { app.screen = Screen::Confirm(ClearAction::CustomWords); }
+                9 => { app.screen = Screen::Confirm(ClearAction::Progress); }
+                10 => { return true; }
                 _ => {}
             }
         }
@@ -218,6 +237,41 @@ pub(super) fn handle_about(app: &mut App, code: KeyCode) {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => { app.screen = Screen::MainMenu; }
         _ => {}
     }
+}
+
+pub(super) fn handle_import_file(app: &mut App, code: KeyCode) -> Result<()> {
+    match code {
+        KeyCode::Esc => { app.screen = Screen::MainMenu; }
+        KeyCode::Backspace => { app.import_path.pop(); }
+        KeyCode::Enter => {
+            let raw = app.import_path.trim().to_string();
+            let path = expand_tilde(&raw);
+            match app.db.import_words_json(&path) {
+                Ok((imported, skipped)) => {
+                    app.status_message =
+                        format!("Imported {imported} word(s), skipped {skipped}.");
+                    app.refresh_content_items();
+                }
+                Err(e) => {
+                    app.status_message = format!("Import failed: {e}");
+                }
+            }
+            app.status_set_at = Some(Instant::now());
+            app.screen = Screen::MainMenu;
+        }
+        KeyCode::Char(c) => { app.import_path.push(c); }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn expand_tilde(s: &str) -> std::path::PathBuf {
+    if let Some(rest) = s.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    std::path::PathBuf::from(s)
 }
 
 pub(super) fn handle_confirm(app: &mut App, code: KeyCode, action: ClearAction) -> Result<()> {

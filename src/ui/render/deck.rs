@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, BorderType, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, BorderType, Clear, List, ListItem, ListState, Paragraph},
 };
 
 use crate::ui::app_state::App;
@@ -168,7 +168,9 @@ pub(super) fn render_search_deck(f: &mut Frame, app: &App, area: Rect) {
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(BLUE))
             .title(results_title));
-    f.render_widget(list, chunks[1]);
+    let mut list_state = ListState::default();
+    list_state.select(Some(app.search_cursor));
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
 
     let deck_name = if app.deck_name_input.is_empty() { "My Deck" } else { &app.deck_name_input };
     let remove_hint = if !app.deck_name_input.is_empty() { "  •  R Remove from deck" } else { "" };

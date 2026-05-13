@@ -1,10 +1,11 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, BorderType, List, ListItem, ListState, Paragraph},
 };
+use chrono::{Datelike, Utc};
 
 use crate::ui::app_state::App;
 use super::{ACCENT, BG, BLUE, CYAN, GRAY, GREEN, ORANGE, RED, WHITE, YELLOW};
@@ -27,10 +28,15 @@ pub(super) fn render_stats(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
+    let vert = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(20), Constraint::Length(9)])
+        .split(inner);
+
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(inner);
+        .split(vert[0]);
 
     // Left column
     let left_chunks = Layout::default()
@@ -176,4 +182,47 @@ pub(super) fn render_stats(f: &mut Frame, app: &App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded)
             .border_style(Style::default().fg(GREEN)).title(" 7-Day Activity "));
     f.render_widget(daily_p, right_chunks[2]);
+
+    render_heatmap(f, app, vert[1]);
+}
+
+fn render_heatmap(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .title(" Activity Heatmap (12 weeks) ")
+        .title_style(Style::default().fg(GRAY))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(GRAY));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let today = Utc::now().date_naive();
+    let days_since_monday = today.weekday().num_days_from_monday() as i64;
+    let this_monday = today - chrono::Duration::days(days_since_monday);
+    let start = this_monday - chrono::Duration::weeks(11);
+    let weeks: usize = 12;
+    let day_labels = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+
+    let lines: Vec<Line> = day_labels.iter().enumerate().map(|(dow, label)| {
+        let mut spans = vec![Span::styled(format!("{label} "), Style::default().fg(GRAY))];
+        for week in 0..weeks {
+            let date = start + chrono::Duration::days((week * 7 + dow) as i64);
+            if date > today {
+                spans.push(Span::raw("  "));
+                continue;
+            }
+            let key = date.format("%Y-%m-%d").to_string();
+            let count = app.heatmap.get(&key).copied().unwrap_or(0);
+            let color = match count {
+                0     => Color::Rgb(35, 45, 35),
+                1..=2 => Color::Rgb(0, 100, 40),
+                3..=6 => Color::Rgb(0, 170, 70),
+                _     => Color::Rgb(50, 230, 100),
+            };
+            spans.push(Span::styled("█ ", Style::default().fg(color)));
+        }
+        Line::from(spans)
+    }).collect();
+
+    f.render_widget(Paragraph::new(lines), inner);
 }

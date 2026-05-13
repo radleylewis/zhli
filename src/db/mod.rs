@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rusqlite::{Connection, OpenFlags, params, params_from_iter, types::Value, OptionalExtension};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 use crate::srs::{CardDirection};
 
@@ -419,7 +420,7 @@ impl Database {
                     COALESCE((SELECT MIN(c.suspended) FROM cards c WHERE c.word_id = w.id), 0)
              FROM words w
              WHERE w.hanzi LIKE ?1 OR w.pinyin LIKE ?1 OR w.english LIKE ?1
-             LIMIT 50"
+             LIMIT 500"
         )?;
         let rows = stmt.query_map(params![pat], |r| {
             let deck_list: Option<String> = r.get(5)?;
@@ -669,6 +670,90 @@ impl Database {
         Ok(map)
     }
 
+    // ── Export / Import ───────────────────────────────────────────────────────
+
+    pub fn export_custom_words(&self, path: &std::path::Path) -> Result<usize> {
+        let mut stmt = self.conn.prepare(
+            "SELECT w.hanzi, w.pinyin, w.english,
+                    COALESCE((SELECT GROUP_CONCAT(wdm.deck_name, char(0))
+                              FROM word_deck_memberships wdm
+                              WHERE wdm.word_id = w.id
+                              ORDER BY wdm.deck_name), '')
+             FROM words w WHERE w.level = 0
+             ORDER BY w.hanzi"
+        )?;
+
+        let words: Vec<ExportWord> = stmt.query_map([], |r| {
+            let decks_raw: String = r.get(3)?;
+            Ok(ExportWord {
+                hanzi:   r.get(0)?,
+                pinyin:  r.get(1)?,
+                english: r.get(2)?,
+                decks:   decks_raw.split('\0').filter(|s| !s.is_empty())
+                                  .map(|s| s.to_string()).collect(),
+            })
+        })?.collect::<rusqlite::Result<_>>()?;
+
+        let count = words.len();
+        let json = serde_json::to_string_pretty(&words)?;
+        std::fs::write(path, json)?;
+        Ok(count)
+    }
+
+    pub fn import_words_json(&self, path: &std::path::Path) -> Result<(usize, usize)> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Cannot read file: {e}"))?;
+        let words: Vec<ExportWord> = serde_json::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+
+        let mut imported = 0usize;
+        let mut skipped  = 0usize;
+        let now = Utc::now().to_rfc3339();
+
+        for word in &words {
+            let hanzi   = word.hanzi.trim();
+            let pinyin  = word.pinyin.trim();
+            let english = word.english.trim();
+            if hanzi.is_empty() || pinyin.is_empty() || english.is_empty() {
+                skipped += 1;
+                continue;
+            }
+
+            let inserted = self.conn.execute(
+                "INSERT OR IGNORE INTO words (hanzi, pinyin, english, level) VALUES (?1,?2,?3,0)",
+                params![hanzi, pinyin, english],
+            )?;
+
+            // Only proceed if this is (or becomes) a custom word.
+            let word_id: Option<i64> = self.conn.query_row(
+                "SELECT id FROM words WHERE hanzi=?1 AND pinyin=?2 AND level=0",
+                params![hanzi, pinyin], |r| r.get(0),
+            ).optional()?;
+
+            let Some(word_id) = word_id else {
+                skipped += 1; // conflicts with an HSK entry
+                continue;
+            };
+
+            for dir in &["zh_to_pinyin", "zh_to_en", "en_to_zh", "pinyin_to_zh"] {
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO cards \
+                     (word_id, direction, ease_factor, interval_days, repetitions, due_at, created_at) \
+                     VALUES (?1,?2,2.5,0,0,?3,?3)",
+                    params![word_id, dir, now],
+                )?;
+            }
+
+            for deck_name in &word.decks {
+                let _ = self.add_word_to_deck(word_id, deck_name);
+            }
+
+            if inserted > 0 { imported += 1; } else { skipped += 1; }
+        }
+
+        Ok((imported, skipped))
+    }
+
     pub fn load_setting(&self, key: &str) -> Result<Option<String>> {
         match self.conn.query_row(
             "SELECT value FROM settings WHERE key = ?1",
@@ -681,6 +766,14 @@ impl Database {
         }
     }
 
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportWord {
+    pub hanzi:   String,
+    pub pinyin:  String,
+    pub english: String,
+    pub decks:   Vec<String>,
 }
 
 fn placeholders(n: usize) -> String {
@@ -1084,5 +1177,167 @@ mod tests {
         let db = db();
         let map = db.heatmap_data(30).unwrap();
         assert!(map.is_empty());
+    }
+
+    // ── Export / Import ───────────────────────────────────────────────────────
+
+    fn temp_json(tag: &str) -> std::path::PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos();
+        std::env::temp_dir().join(format!("zhli_test_{tag}_{nanos}.json"))
+    }
+
+    #[test]
+    fn export_empty_when_no_custom_words() {
+        let db = db();
+        let path = temp_json("empty");
+        let count = db.export_custom_words(&path).unwrap();
+        assert_eq!(count, 0);
+        let content = std::fs::read_to_string(&path).unwrap();
+        let words: Vec<ExportWord> = serde_json::from_str(&content).unwrap();
+        assert!(words.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn export_includes_words_and_decks() {
+        let db = db();
+        let wid = add_word(&db, "你好", "nǐ hǎo", "hello");
+        db.create_deck("Greetings").unwrap();
+        db.add_word_to_deck(wid, "Greetings").unwrap();
+
+        let path = temp_json("export_words");
+        let count = db.export_custom_words(&path).unwrap();
+        assert_eq!(count, 1);
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let words: Vec<ExportWord> = serde_json::from_str(&content).unwrap();
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].hanzi, "你好");
+        assert_eq!(words[0].pinyin, "nǐ hǎo");
+        assert_eq!(words[0].english, "hello");
+        assert_eq!(words[0].decks, vec!["Greetings"]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn export_multiple_decks_per_word() {
+        let db = db();
+        let wid = add_word(&db, "再见", "zài jiàn", "goodbye");
+        db.add_word_to_deck(wid, "Deck A").unwrap();
+        db.add_word_to_deck(wid, "Deck B").unwrap();
+
+        let path = temp_json("multi_deck");
+        db.export_custom_words(&path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let words: Vec<ExportWord> = serde_json::from_str(&content).unwrap();
+        assert_eq!(words[0].decks.len(), 2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_adds_new_word() {
+        let db = db();
+        let json = r#"[{"hanzi":"再见","pinyin":"zài jiàn","english":"goodbye","decks":[]}]"#;
+        let path = temp_json("import_new");
+        std::fs::write(&path, json).unwrap();
+
+        let (imported, skipped) = db.import_words_json(&path).unwrap();
+        assert_eq!(imported, 1);
+        assert_eq!(skipped, 0);
+
+        let results = db.search_words("再见").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].hanzi, "再见");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_creates_cards_for_all_directions() {
+        let db = db();
+        let json = r#"[{"hanzi":"再见","pinyin":"zài jiàn","english":"goodbye","decks":[]}]"#;
+        let path = temp_json("import_cards");
+        std::fs::write(&path, json).unwrap();
+        db.import_words_json(&path).unwrap();
+
+        let word_id: i64 = db.conn.query_row(
+            "SELECT id FROM words WHERE hanzi = '再见'", [], |r| r.get(0),
+        ).unwrap();
+        let card_count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM cards WHERE word_id = ?1", params![word_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(card_count, 4);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_assigns_decks() {
+        let db = db();
+        let json = r#"[{"hanzi":"再见","pinyin":"zài jiàn","english":"goodbye","decks":["Travel","Basics"]}]"#;
+        let path = temp_json("import_decks");
+        std::fs::write(&path, json).unwrap();
+        db.import_words_json(&path).unwrap();
+
+        let decks = db.list_decks().unwrap();
+        assert!(decks.contains(&"Travel".to_string()));
+        assert!(decks.contains(&"Basics".to_string()));
+
+        let words = db.words_in_deck("Travel").unwrap();
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].hanzi, "再见");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_skips_exact_duplicate() {
+        let db = db();
+        add_word(&db, "你好", "nǐ hǎo", "hello");
+
+        let json = r#"[{"hanzi":"你好","pinyin":"nǐ hǎo","english":"hello","decks":[]}]"#;
+        let path = temp_json("import_dup");
+        std::fs::write(&path, json).unwrap();
+
+        let (imported, skipped) = db.import_words_json(&path).unwrap();
+        assert_eq!(imported, 0);
+        assert_eq!(skipped, 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_invalid_json_returns_error() {
+        let db = db();
+        let path = temp_json("import_bad");
+        std::fs::write(&path, "not valid json {{").unwrap();
+        assert!(db.import_words_json(&path).is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_missing_file_returns_error() {
+        let db = db();
+        let path = std::path::PathBuf::from("/tmp/zhli_nonexistent_9999999.json");
+        assert!(db.import_words_json(&path).is_err());
+    }
+
+    #[test]
+    fn export_import_roundtrip() {
+        let src = db();
+        let wid = add_word(&src, "你好", "nǐ hǎo", "hello");
+        src.create_deck("Round").unwrap();
+        src.add_word_to_deck(wid, "Round").unwrap();
+
+        let path = temp_json("roundtrip");
+        src.export_custom_words(&path).unwrap();
+
+        let dst = db();
+        let (imported, skipped) = dst.import_words_json(&path).unwrap();
+        assert_eq!(imported, 1);
+        assert_eq!(skipped, 0);
+
+        let words = dst.words_in_deck("Round").unwrap();
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].hanzi, "你好");
+        assert_eq!(words[0].pinyin, "nǐ hǎo");
+        let _ = std::fs::remove_file(&path);
     }
 }

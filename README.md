@@ -15,7 +15,8 @@ A terminal-based flashcard app for learning HSK 1–6 Chinese vocabulary using t
 - HSK words added to a deck remain visible in their HSK level
 - Online MDBG dictionary lookup for adding new words
 - Edit, suspend/unsuspend, and delete custom words from the search screen
-- Stats dashboard: streak, retention, per-level/per-deck progress, weakest words, 7-day activity
+- Stats dashboard: streak, retention, per-level/per-deck progress, weakest words, 7-day activity chart, 12-week activity heatmap
+- Export custom words to JSON; import from any compatible JSON file
 - Vim-style navigation (`j`/`k`, `gg`/`G`, `:q`, `:q!`)
 - Clipboard yank and browser dictionary lookup during review
 - Study mode, content selection, and deck selection persisted across sessions
@@ -112,6 +113,8 @@ session_limit = 100
 
 Lines starting with `#` are ignored. Both keys are optional — omit either to use the default.
 
+Any unrecognised key will produce a warning shown in the status bar on startup.
+
 ---
 
 ## Usage
@@ -136,9 +139,12 @@ Lines starting with `#` are ignored. Both keys are optional — omit either to u
 | Option | Description |
 |--------|-------------|
 | Study / Review Cards | Choose mode and content, then start a session |
-| Stats & Report Card | View progress, streaks, and weakest words |
+| Stats & Report Card | View progress, streaks, weakest words, and 12-week heatmap |
 | Add Word to Deck | Create or manage custom decks |
 | Search & Browse | Search all words, manage deck membership, edit, suspend |
+| Suspended Words | Review and unsuspend words |
+| Export Custom Words | Save custom words + decks to `export.json` in the data directory |
+| Import from JSON | Load words from a previously exported JSON file |
 | About / Rules / Algo | App guide, pinyin rules, SM-2 explanation |
 | Clear Custom Words | Delete all custom words and decks |
 | Reset All Progress | Reset all SRS state to zero |
@@ -261,6 +267,28 @@ From the Search screen, press `/` to open the online dictionary lookup. Searches
 | `/` | Filter current results |
 | `Enter` on result | Add word to deck |
 | `Esc` | Back |
+
+---
+
+## Export and Import
+
+**Export Custom Words** (menu item 6) writes all your custom words and their deck assignments to `export.json` in the data directory (same folder as the database). The file path is shown in the status bar after export.
+
+**Import from JSON** (menu item 7) reads a `export.json`-format file. The path input is pre-filled with the default export location — edit it to load any compatible file.
+
+Format:
+
+```json
+[
+  {"hanzi": "你好", "pinyin": "nǐ hǎo", "english": "hello", "decks": []},
+  {"hanzi": "再见", "pinyin": "zài jiàn", "english": "goodbye", "decks": ["Travel"]}
+]
+```
+
+- Words that already exist (same hanzi + pinyin) are skipped and counted as "skipped"
+- Words that conflict with built-in HSK entries are also skipped
+- Deck names are created automatically if they do not already exist
+- SRS state starts fresh for imported words
 
 ---
 
