@@ -86,6 +86,10 @@ cargo build --release
 ./target/release/zhli
 # or
 cargo run --release
+# install to ~/.cargo/bin/ (user PATH):
+cargo install --path .
+# install system-wide:
+sudo cargo install --path . --root /usr/local
 ```
 
 The app creates its database on first launch and seeds all HSK 1–6 words automatically. Existing databases from earlier versions are upgraded automatically on first run.
