@@ -361,9 +361,9 @@ fn render_session_complete(f: &mut Frame, app: &App, area: Rect) {
     let wrong = app.session_total.saturating_sub(app.session_correct);
 
     let elapsed = app
-        .session_start
-        .map(|s| {
-            let secs = s.elapsed().as_secs();
+        .session_duration
+        .map(|d| {
+            let secs = d.as_secs();
             if secs >= 60 {
                 format!("{}m {}s", secs / 60, secs % 60)
             } else {

@@ -2,7 +2,7 @@ use crate::db::{CardRow, Database, Stats};
 use crate::srs::{CardDirection, ReviewGrade};
 use anyhow::Result;
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClearAction {
@@ -56,6 +56,7 @@ pub struct App {
     pub content_items: Vec<ContentItem>,
     pub content_cursor: usize,
     pub session_start: Option<Instant>,
+    pub session_duration: Option<Duration>,
     // Review state
     pub review_queue: Vec<CardRow>,
     pub current_card_idx: usize,
@@ -200,6 +201,7 @@ impl App {
             content_items,
             content_cursor: 0,
             session_start: None,
+            session_duration: None,
             review_queue: vec![],
             current_card_idx: 0,
             review_phase: ReviewPhase::Prompt,
@@ -339,12 +341,16 @@ impl App {
         self.session_correct = 0;
         self.session_total = 0;
         self.session_start = Some(Instant::now());
+        self.session_duration = None;
         self.card_start = Some(Instant::now());
         Ok(())
     }
 
     pub fn advance_card(&mut self) {
         self.current_card_idx += 1;
+        if self.current_card_idx >= self.review_queue.len() {
+            self.session_duration = self.session_start.map(|s| s.elapsed());
+        }
         self.review_phase = ReviewPhase::Prompt;
         self.input_buffer.clear();
         self.feedback.clear();
